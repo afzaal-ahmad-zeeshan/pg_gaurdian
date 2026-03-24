@@ -5,7 +5,8 @@
       "Bash(mkdir -p \"c:/Users/afzaa/Documents/VSCode/vibe/pg_gaurdian/src/app/api/servers/[serverId]/databases\")",
       "Bash(mkdir -p \"c:/Users/afzaa/Documents/VSCode/vibe/pg_gaurdian/src/app/api/servers/[serverId]/test\")",
       "Bash(npx tsc:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(npm test:*)"
     ]
   }
 }
