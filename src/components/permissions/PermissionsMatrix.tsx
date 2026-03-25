@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Database, FolderOpen, Table2, Hash, Code2, Tag, Globe, Plug,
@@ -280,18 +280,53 @@ function SimpleUsageTable({ rows, nameLabel }: { rows: (FdwPermission | ForeignS
   )
 }
 
+// ─── Role selection persistence ───────────────────────────────────────────────
+
+const ROLES_KEY = 'pg_guardian_selected_roles'
+
+function loadPersistedRole(serverId: string): string | null {
+  if (!serverId || typeof window === 'undefined') return null
+  try {
+    const map: Record<string, string> = JSON.parse(localStorage.getItem(ROLES_KEY) ?? '{}')
+    return map[serverId] ?? null
+  } catch { return null }
+}
+
+function persistRole(serverId: string, role: string) {
+  if (!serverId || typeof window === 'undefined') return
+  try {
+    const map: Record<string, string> = JSON.parse(localStorage.getItem(ROLES_KEY) ?? '{}')
+    map[serverId] = role
+    localStorage.setItem(ROLES_KEY, JSON.stringify(map))
+  } catch { /* ignore */ }
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function PermissionsMatrix() {
   const { servers, selectedId, selected } = useServerContext()
   // null = "let the component auto-pick"; string = explicit user choice
-  const [userPickedRole, setUserPickedRole] = useState<string | null>(null)
-  const [lastServerId, setLastServerId] = useState(selectedId)
+  const [userPickedRole, setUserPickedRoleState] = useState<string | null>(null)
+  const [lastServerId, setLastServerId] = useState('')
 
-  // Reset explicit pick whenever the server changes (runs during render, not in an effect)
+  // When selectedId stabilises on mount, or whenever the server changes,
+  // restore the persisted role for that server.
   if (selectedId !== lastServerId) {
     setLastServerId(selectedId)
-    setUserPickedRole(null)
+    setUserPickedRoleState(loadPersistedRole(selectedId))
+  }
+
+  // On first mount (selectedId may still be '' while ServerContext hydrates).
+  // Once it settles to a real value the above block handles it, but we also
+  // need to load from localStorage after the initial hydration effect runs.
+  useEffect(() => {
+    if (selectedId) setUserPickedRoleState(loadPersistedRole(selectedId))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const setUserPickedRole = (role: string) => {
+    setUserPickedRoleState(role)
+    if (selectedId) persistRole(selectedId, role)
   }
 
   // 1 ─ Fetch login roles to populate the user dropdown

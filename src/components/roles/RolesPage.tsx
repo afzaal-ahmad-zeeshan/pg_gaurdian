@@ -40,6 +40,7 @@ export function RolesPage() {
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-24 text-muted-foreground">OID</TableHead>
               <TableHead>Name</TableHead>
               <TableHead>Can Login</TableHead>
               <TableHead>Superuser</TableHead>
@@ -51,6 +52,7 @@ export function RolesPage() {
           <TableBody>
             {roles.map((role: PgRole) => (
               <TableRow key={role.rolname}>
+                <TableCell className="font-mono text-xs text-muted-foreground">{role.oid}</TableCell>
                 <TableCell className="font-mono text-sm">{role.rolname}</TableCell>
                 <TableCell><Flag on={role.rolcanlogin} /></TableCell>
                 <TableCell><Flag on={role.rolsuper} /></TableCell>

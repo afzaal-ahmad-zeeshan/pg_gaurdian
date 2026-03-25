@@ -12,7 +12,7 @@ interface Props {
   onOpenChange: (v: boolean) => void
 }
 
-const blank = { name: '', host: 'localhost', port: '5432', database: 'postgres', user: 'postgres', password: '' }
+const blank = { name: '', host: 'localhost', port: '5432', database: 'postgres', user: 'postgres', password: '', ssl: false }
 
 export function AddServerDialog({ open, onOpenChange }: Props) {
   const { addServer } = useServerContext()
@@ -70,7 +70,17 @@ export function AddServerDialog({ open, onOpenChange }: Props) {
             </div>
           ))}
 
-          <div className="rounded-md border border-border bg-muted/40 p-3 space-y-1">
+          <div className="rounded-md border border-border bg-muted/40 p-3 space-y-3">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={form.ssl}
+                onChange={(e) => setForm((f) => ({ ...f, ssl: e.target.checked }))}
+                className="h-4 w-4 rounded accent-primary"
+              />
+              <span className="text-sm font-medium">Require SSL</span>
+            </label>
+
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <input
                 type="checkbox"

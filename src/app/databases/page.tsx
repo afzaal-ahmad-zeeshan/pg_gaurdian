@@ -37,15 +37,17 @@ export default function DatabasesPage() {
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-24 text-muted-foreground">OID</TableHead>
               <TableHead>Name</TableHead>
-              <TableHead>Owner OID</TableHead>
+              <TableHead>Owner</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {dbs.map((db: { datname: string; datdba: number }) => (
+            {dbs.map((db: { oid: number; datname: string; owner: string }) => (
               <TableRow key={db.datname}>
+                <TableCell className="font-mono text-xs text-muted-foreground">{db.oid}</TableCell>
                 <TableCell className="font-mono">{db.datname}</TableCell>
-                <TableCell>{db.datdba}</TableCell>
+                <TableCell className="font-mono text-sm">{db.owner}</TableCell>
               </TableRow>
             ))}
           </TableBody>

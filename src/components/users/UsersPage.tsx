@@ -103,6 +103,7 @@ export function UsersPage() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-24 text-muted-foreground">OID</TableHead>
                 <TableHead>Username</TableHead>
                 <TableHead>Superuser</TableHead>
                 <TableHead>Create DB</TableHead>
@@ -118,6 +119,7 @@ export function UsersPage() {
                   key={u.rolname}
                   className={u.rolname === currentUser?.username ? 'bg-accent/40' : ''}
                 >
+                  <TableCell className="font-mono text-xs text-muted-foreground">{u.oid}</TableCell>
                   <TableCell className="font-mono text-sm">
                     {u.rolname}
                     {u.rolname === currentUser?.username && (

@@ -21,6 +21,7 @@ export interface PgUser {
 }
 
 export interface PgRole {
+  oid: number
   rolname: string
   rolsuper: boolean
   rolinherit: boolean
@@ -35,8 +36,9 @@ export interface PgRole {
 }
 
 export interface PgDatabase {
+  oid: number
   datname: string
-  datdba: number
+  owner: string
   datacl: string[] | null
 }
 

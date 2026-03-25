@@ -10,6 +10,7 @@ import {
 export async function getRoles(pool: Pool): Promise<PgRole[]> {
   const { rows } = await pool.query<PgRole>(`
     SELECT
+      r.oid,
       r.rolname,
       r.rolsuper,
       r.rolinherit,
@@ -37,10 +38,11 @@ export async function getRoles(pool: Pool): Promise<PgRole[]> {
 
 export async function getDatabases(pool: Pool): Promise<PgDatabase[]> {
   const { rows } = await pool.query<PgDatabase>(`
-    SELECT datname, datdba, datacl::text[]
-    FROM pg_catalog.pg_database
-    WHERE datistemplate = false
-    ORDER BY datname
+    SELECT d.oid, d.datname, r.rolname AS owner, d.datacl::text[]
+    FROM pg_catalog.pg_database d
+    JOIN pg_catalog.pg_roles r ON r.oid = d.datdba
+    WHERE d.datistemplate = false
+    ORDER BY d.datname
   `)
   return rows
 }
@@ -84,6 +86,7 @@ export async function dropRole(pool: Pool, rolename: string): Promise<void> {
 export async function getUsers(pool: Pool): Promise<PgRole[]> {
   const { rows } = await pool.query<PgRole>(`
     SELECT
+      r.oid,
       r.rolname,
       r.rolsuper,
       r.rolinherit,
@@ -180,104 +183,175 @@ export async function getPermissionsMatrix(pool: Pool, rolename: string): Promis
     }
   }
 
+  // ACL-based privilege checks: read ACL arrays directly from catalog so this
+  // works regardless of whether the connection user is a superuser.
+  // effective_roles = the target role itself + PUBLIC (OID 0) + all roles it is
+  // a direct member of (inherited grants).
+  const er = `
+    WITH effective_roles AS (
+      SELECT r.oid
+        FROM pg_catalog.pg_roles r
+       WHERE r.rolname = $1
+      UNION ALL
+      SELECT 0::oid
+      UNION ALL
+      SELECT m.roleid
+        FROM pg_catalog.pg_auth_members m
+        JOIN pg_catalog.pg_roles r ON r.oid = m.member AND r.rolname = $1
+    )
+  `
+
   const [databases, schemas, tables, sequences, functions, types, fdws, foreignServers] =
     await Promise.all([
 
-      safe<{ name: string; connect: boolean; create_db: boolean; temp: boolean }>(
-        `SELECT d.datname AS name,
-           coalesce(has_database_privilege($1, d.oid, 'CONNECT'), false) AS connect,
-           coalesce(has_database_privilege($1, d.oid, 'CREATE'),  false) AS create_db,
-           coalesce(has_database_privilege($1, d.oid, 'TEMP'),    false) AS temp
-         FROM pg_catalog.pg_database d
-         WHERE d.datistemplate = false
-         ORDER BY d.datname`,
-        [rolename],
-      ),
+      // Databases – cluster-wide, always fully visible via pg_database
+      safe<{ name: string; connect: boolean; create_db: boolean; temp: boolean }>(`
+        ${er}
+        SELECT
+          d.datname AS name,
+          coalesce(bool_or(a.privilege_type = 'CONNECT'), false) AS connect,
+          coalesce(bool_or(a.privilege_type = 'CREATE'),  false) AS create_db,
+          coalesce(bool_or(a.privilege_type = 'TEMP'),    false) AS temp
+        FROM pg_catalog.pg_database d
+        LEFT JOIN LATERAL aclexplode(
+          coalesce(d.datacl, acldefault('d', d.datdba))
+        ) a ON a.grantee IN (SELECT oid FROM effective_roles)
+        WHERE d.datistemplate = false
+        GROUP BY d.datname
+        ORDER BY d.datname
+      `, [rolename]),
 
-      safe<{ name: string; usage: boolean; create_schema: boolean }>(
-        `SELECT n.nspname AS name,
-           coalesce(has_schema_privilege($1, n.oid, 'USAGE'),  false) AS usage,
-           coalesce(has_schema_privilege($1, n.oid, 'CREATE'), false) AS create_schema
-         FROM pg_catalog.pg_namespace n
-         WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname <> 'information_schema'
-         ORDER BY n.nspname`,
-        [rolename],
-      ),
+      // Schemas – all schemas in the connected database, even ones with no access
+      safe<{ name: string; usage: boolean; create_schema: boolean }>(`
+        ${er}
+        SELECT
+          n.nspname AS name,
+          coalesce(bool_or(a.privilege_type = 'USAGE'),  false) AS usage,
+          coalesce(bool_or(a.privilege_type = 'CREATE'), false) AS create_schema
+        FROM pg_catalog.pg_namespace n
+        LEFT JOIN LATERAL aclexplode(
+          coalesce(n.nspacl, acldefault('n', n.nspowner))
+        ) a ON a.grantee IN (SELECT oid FROM effective_roles)
+        WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname <> 'information_schema'
+        GROUP BY n.nspname
+        ORDER BY n.nspname
+      `, [rolename]),
 
+      // Tables / views / materialized views / foreign tables / partitioned tables
       safe<{
         schema_name: string; name: string; kind: string
         sel: boolean; ins: boolean; upd: boolean; del: boolean
         trunc: boolean; refs: boolean; trig: boolean
-      }>(
-        `SELECT n.nspname AS schema_name, c.relname AS name, c.relkind::text AS kind,
-           coalesce(has_table_privilege($1, c.oid, 'SELECT'),     false) AS sel,
-           coalesce(has_table_privilege($1, c.oid, 'INSERT'),     false) AS ins,
-           coalesce(has_table_privilege($1, c.oid, 'UPDATE'),     false) AS upd,
-           coalesce(has_table_privilege($1, c.oid, 'DELETE'),     false) AS del,
-           coalesce(has_table_privilege($1, c.oid, 'TRUNCATE'),   false) AS trunc,
-           coalesce(has_table_privilege($1, c.oid, 'REFERENCES'), false) AS refs,
-           coalesce(has_table_privilege($1, c.oid, 'TRIGGER'),    false) AS trig
-         FROM pg_catalog.pg_class c
-         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-         WHERE c.relkind IN ('r','v','m','f','p')
-           AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
-         ORDER BY n.nspname, c.relname`,
-        [rolename],
-      ),
+      }>(`
+        ${er}
+        SELECT
+          n.nspname AS schema_name,
+          c.relname AS name,
+          c.relkind::text AS kind,
+          coalesce(bool_or(a.privilege_type = 'SELECT'),     false) AS sel,
+          coalesce(bool_or(a.privilege_type = 'INSERT'),     false) AS ins,
+          coalesce(bool_or(a.privilege_type = 'UPDATE'),     false) AS upd,
+          coalesce(bool_or(a.privilege_type = 'DELETE'),     false) AS del,
+          coalesce(bool_or(a.privilege_type = 'TRUNCATE'),   false) AS trunc,
+          coalesce(bool_or(a.privilege_type = 'REFERENCES'), false) AS refs,
+          coalesce(bool_or(a.privilege_type = 'TRIGGER'),    false) AS trig
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        LEFT JOIN LATERAL aclexplode(
+          coalesce(c.relacl, acldefault('r', c.relowner))
+        ) a ON a.grantee IN (SELECT oid FROM effective_roles)
+        WHERE c.relkind IN ('r','v','m','f','p')
+          AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+        GROUP BY n.nspname, c.relname, c.relkind
+        ORDER BY n.nspname, c.relname
+      `, [rolename]),
 
-      safe<{ schema_name: string; name: string; usage: boolean; sel: boolean; upd: boolean }>(
-        `SELECT n.nspname AS schema_name, c.relname AS name,
-           coalesce(has_sequence_privilege($1, c.oid, 'USAGE'),  false) AS usage,
-           coalesce(has_sequence_privilege($1, c.oid, 'SELECT'), false) AS sel,
-           coalesce(has_sequence_privilege($1, c.oid, 'UPDATE'), false) AS upd
-         FROM pg_catalog.pg_class c
-         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-         WHERE c.relkind = 'S'
-           AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
-         ORDER BY n.nspname, c.relname`,
-        [rolename],
-      ),
+      // Sequences
+      safe<{ schema_name: string; name: string; usage: boolean; sel: boolean; upd: boolean }>(`
+        ${er}
+        SELECT
+          n.nspname AS schema_name,
+          c.relname AS name,
+          coalesce(bool_or(a.privilege_type = 'USAGE'),  false) AS usage,
+          coalesce(bool_or(a.privilege_type = 'SELECT'), false) AS sel,
+          coalesce(bool_or(a.privilege_type = 'UPDATE'), false) AS upd
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        LEFT JOIN LATERAL aclexplode(
+          coalesce(c.relacl, acldefault('S', c.relowner))
+        ) a ON a.grantee IN (SELECT oid FROM effective_roles)
+        WHERE c.relkind = 'S'
+          AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+        GROUP BY n.nspname, c.relname
+        ORDER BY n.nspname, c.relname
+      `, [rolename]),
 
-      safe<{ schema_name: string; name: string; kind: string; args: string; execute: boolean }>(
-        `SELECT n.nspname AS schema_name, p.proname AS name,
-           p.prokind::text AS kind,
-           pg_get_function_identity_arguments(p.oid) AS args,
-           coalesce(has_function_privilege($1, p.oid, 'EXECUTE'), false) AS execute
-         FROM pg_catalog.pg_proc p
-         JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-         WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
-         ORDER BY n.nspname, p.proname, p.oid`,
-        [rolename],
-      ),
+      // Functions / procedures / aggregates / window functions
+      safe<{ schema_name: string; name: string; kind: string; args: string; execute: boolean }>(`
+        ${er}
+        SELECT
+          n.nspname AS schema_name,
+          p.proname AS name,
+          p.prokind::text AS kind,
+          pg_get_function_identity_arguments(p.oid) AS args,
+          coalesce(bool_or(a.privilege_type = 'EXECUTE'), false) AS execute
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+        LEFT JOIN LATERAL aclexplode(
+          coalesce(p.proacl, acldefault('f', p.proowner))
+        ) a ON a.grantee IN (SELECT oid FROM effective_roles)
+        WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+        GROUP BY n.nspname, p.proname, p.prokind, p.oid
+        ORDER BY n.nspname, p.proname, p.oid
+      `, [rolename]),
 
-      safe<{ schema_name: string; name: string; kind: string; usage: boolean }>(
-        `SELECT n.nspname AS schema_name, t.typname AS name,
-           t.typtype::text AS kind,
-           coalesce(has_type_privilege($1, t.oid, 'USAGE'), false) AS usage
-         FROM pg_catalog.pg_type t
-         JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
-         WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
-           AND t.typtype IN ('d','e','r','m')
-           AND t.typelem = 0
-         ORDER BY n.nspname, t.typname`,
-        [rolename],
-      ),
+      // Types (domains, enums, ranges, multiranges)
+      safe<{ schema_name: string; name: string; kind: string; usage: boolean }>(`
+        ${er}
+        SELECT
+          n.nspname AS schema_name,
+          t.typname AS name,
+          t.typtype::text AS kind,
+          coalesce(bool_or(a.privilege_type = 'USAGE'), false) AS usage
+        FROM pg_catalog.pg_type t
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+        LEFT JOIN LATERAL aclexplode(
+          coalesce(t.typacl, acldefault('T', t.typowner))
+        ) a ON a.grantee IN (SELECT oid FROM effective_roles)
+        WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+          AND t.typtype IN ('d','e','r','m')
+          AND t.typelem = 0
+        GROUP BY n.nspname, t.typname, t.typtype
+        ORDER BY n.nspname, t.typname
+      `, [rolename]),
 
-      safe<{ name: string; usage: boolean }>(
-        `SELECT w.fdwname AS name,
-           coalesce(has_foreign_data_wrapper_privilege($1, w.oid, 'USAGE'), false) AS usage
-         FROM pg_catalog.pg_foreign_data_wrapper w
-         ORDER BY w.fdwname`,
-        [rolename],
-      ),
+      // Foreign data wrappers
+      safe<{ name: string; usage: boolean }>(`
+        ${er}
+        SELECT
+          w.fdwname AS name,
+          coalesce(bool_or(a.privilege_type = 'USAGE'), false) AS usage
+        FROM pg_catalog.pg_foreign_data_wrapper w
+        LEFT JOIN LATERAL aclexplode(
+          coalesce(w.fdwacl, acldefault('F', w.fdwowner))
+        ) a ON a.grantee IN (SELECT oid FROM effective_roles)
+        GROUP BY w.fdwname
+        ORDER BY w.fdwname
+      `, [rolename]),
 
-      safe<{ name: string; usage: boolean }>(
-        `SELECT s.srvname AS name,
-           coalesce(has_server_privilege($1, s.oid, 'USAGE'), false) AS usage
-         FROM pg_catalog.pg_foreign_server s
-         ORDER BY s.srvname`,
-        [rolename],
-      ),
+      // Foreign servers
+      safe<{ name: string; usage: boolean }>(`
+        ${er}
+        SELECT
+          s.srvname AS name,
+          coalesce(bool_or(a.privilege_type = 'USAGE'), false) AS usage
+        FROM pg_catalog.pg_foreign_server s
+        LEFT JOIN LATERAL aclexplode(
+          coalesce(s.srvacl, acldefault('s', s.srvowner))
+        ) a ON a.grantee IN (SELECT oid FROM effective_roles)
+        GROUP BY s.srvname
+        ORDER BY s.srvname
+      `, [rolename]),
     ])
 
   return {

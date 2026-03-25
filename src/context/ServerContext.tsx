@@ -3,6 +3,19 @@ import { createContext, useContext, useState, useEffect, ReactNode } from 'react
 import { ServerConnection } from '@/types'
 import { useServers } from '@/hooks/useServers'
 
+const SELECTED_KEY = 'pg_guardian_selected_server'
+
+function loadSelectedId(): string {
+  if (typeof window === 'undefined') return ''
+  return localStorage.getItem(SELECTED_KEY) ?? ''
+}
+
+function saveSelectedId(id: string) {
+  if (typeof window === 'undefined') return
+  if (id) localStorage.setItem(SELECTED_KEY, id)
+  else localStorage.removeItem(SELECTED_KEY)
+}
+
 interface ServerContextValue {
   servers: ServerConnection[]
   selectedId: string
@@ -16,15 +29,30 @@ const ServerContext = createContext<ServerContextValue | null>(null)
 
 export function ServerProvider({ children }: { children: ReactNode }) {
   const { servers, addServer, removeServer } = useServers()
-  const [selectedId, setSelectedId] = useState('')
+  const [selectedId, setSelectedIdState] = useState('')
 
-  // Auto-select: always default to first server
+  // Restore persisted selection once on mount (after localStorage is available)
   useEffect(() => {
-    if (servers.length > 0 && (!selectedId || !servers.find((s) => s.id === selectedId))) {
-      setSelectedId(servers[0].id)
+    setSelectedIdState(loadSelectedId())
+  }, [])
+
+  // Auto-select: fall back to first server when selection is missing or invalid
+  useEffect(() => {
+    if (servers.length > 0 && !servers.find((s) => s.id === selectedId)) {
+      const id = servers[0].id
+      setSelectedIdState(id)
+      saveSelectedId(id)
     }
-    if (servers.length === 0) setSelectedId('')
+    if (servers.length === 0) {
+      setSelectedIdState('')
+      saveSelectedId('')
+    }
   }, [servers, selectedId])
+
+  const setSelectedId = (id: string) => {
+    setSelectedIdState(id)
+    saveSelectedId(id)
+  }
 
   const selected = servers.find((s) => s.id === selectedId)
 

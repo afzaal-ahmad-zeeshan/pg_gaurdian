@@ -74,10 +74,10 @@ export function ServersPage() {
                   size="sm"
                   variant="outline"
                   onClick={() => testMutation.mutate(server)}
-                  disabled={testMutation.isPending}
+                  disabled={testMutation.isPending && testMutation.variables?.id === server.id}
                 >
                   <Plug size={14} className="mr-1" />
-                  {testMutation.isPending ? 'Testing…' : 'Test connection'}
+                  {testMutation.isPending && testMutation.variables?.id === server.id ? 'Testing…' : 'Test connection'}
                 </Button>
                 {result && (
                   <p className={`text-xs ${result.ok ? 'text-green-500' : 'text-destructive'}`}>

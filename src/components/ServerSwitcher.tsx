@@ -19,7 +19,7 @@ export function ServerSwitcher() {
     <Popover>
       <PopoverTrigger
         className={cn(
-          'w-full flex items-center justify-between rounded-md px-3 py-2 text-left',
+          'w-full overflow-hidden flex items-center justify-between rounded-md px-3 py-2 text-left',
           'hover:bg-accent transition-colors cursor-pointer'
         )}
       >

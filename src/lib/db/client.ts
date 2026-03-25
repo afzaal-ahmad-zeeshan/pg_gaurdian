@@ -4,7 +4,7 @@ import { ServerConnection } from '@/types'
 const pools = new Map<string, Pool>()
 
 function poolKey(s: ServerConnection) {
-  return `${s.host}:${s.port}/${s.database}@${s.user}`
+  return `${s.host}:${s.port}/${s.database}@${s.user}?ssl=${!!s.ssl}`
 }
 
 export function getPool(server: ServerConnection): Pool {
