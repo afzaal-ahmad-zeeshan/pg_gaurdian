@@ -6,9 +6,10 @@
  *   POST /api/pg/databases   — list databases
  *   POST /api/pg/roles       — list / create / drop roles
  *   POST /api/pg/users       — list users + current user info
+ *   POST /api/pg/permissions — permissions matrix for a role
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mockServer, mockRoles, mockDatabases, mockCurrentUser } from '../helpers'
+import { mockServer, mockRoles, mockDatabases, mockCurrentUser, mockMatrix } from '../helpers'
 
 // ─── Module mocks (hoisted) ───────────────────────────────────────────────
 vi.mock('@/lib/db/client', () => ({ getPool: vi.fn() }))
@@ -20,6 +21,7 @@ vi.mock('@/lib/db/queries', () => ({
   getUsers: vi.fn(),
   getCurrentUserInfo: vi.fn(),
   getTablePrivileges: vi.fn(),
+  getPermissionsMatrix: vi.fn(),
 }))
 
 import { getPool } from '@/lib/db/client'
@@ -30,11 +32,13 @@ import {
   dropRole,
   getUsers,
   getCurrentUserInfo,
+  getPermissionsMatrix,
 } from '@/lib/db/queries'
 import { POST as testPost } from '@/app/api/pg/test/route'
 import { POST as databasesPost } from '@/app/api/pg/databases/route'
 import { POST as rolesPost } from '@/app/api/pg/roles/route'
 import { POST as usersPost } from '@/app/api/pg/users/route'
+import { POST as permissionsPost } from '@/app/api/pg/permissions/route'
 
 const mockPool = { connect: vi.fn(), query: vi.fn() }
 
@@ -163,6 +167,32 @@ describe('POST /api/pg/users', () => {
 
   it('returns 400 when connection is missing', async () => {
     const res = await usersPost(makeReq({}))
+    expect(res.status).toBe(400)
+  })
+})
+
+// ─── POST /api/pg/permissions ─────────────────────────────────────────────
+describe('POST /api/pg/permissions', () => {
+  it('returns the permissions matrix for the given role', async () => {
+    vi.mocked(getPermissionsMatrix).mockResolvedValueOnce(mockMatrix)
+
+    const res = await permissionsPost(makeReq({ connection: mockServer, rolename: 'admin' }))
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.rolename).toBe('admin')
+    expect(body.databases).toHaveLength(2)
+    expect(body.schemas).toHaveLength(1)
+    expect(body.tables).toHaveLength(2)
+    expect(vi.mocked(getPermissionsMatrix)).toHaveBeenCalledWith(mockPool, 'admin')
+  })
+
+  it('returns 400 when connection is missing', async () => {
+    const res = await permissionsPost(makeReq({ rolename: 'admin' }))
+    expect(res.status).toBe(400)
+  })
+
+  it('returns 400 when rolename is missing', async () => {
+    const res = await permissionsPost(makeReq({ connection: mockServer }))
     expect(res.status).toBe(400)
   })
 })

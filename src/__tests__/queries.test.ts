@@ -15,6 +15,7 @@ import {
   dropRole,
   grantRole,
   revokeRole,
+  getPermissionsMatrix,
 } from '@/lib/db/queries'
 
 // ─── Mock pool factory ────────────────────────────────────────────────────
@@ -219,6 +220,103 @@ describe('dropRole', () => {
     const pool = makePool([{ rows: [] }])
     await dropRole(pool, 'oldrole')
     expect((pool as any).query).toHaveBeenCalledWith('DROP ROLE IF EXISTS "oldrole"')
+  })
+})
+
+// ─── getPermissionsMatrix ─────────────────────────────────────────────────
+describe('getPermissionsMatrix', () => {
+  // Helper: build a pool whose query mock returns responses in order.
+  // The 8 parallel Promise.all calls each consume one response.
+  function matrixPool(overrides: Partial<Record<
+    'databases' | 'schemas' | 'tables' | 'sequences' | 'functions' | 'types' | 'fdws' | 'foreignServers',
+    { rows: unknown[] } | Error
+  >> = {}) {
+    const defaults: Record<string, { rows: unknown[] }> = {
+      databases: { rows: [{ name: 'postgres', connect: true, create_db: false, temp: true }] },
+      schemas:   { rows: [{ name: 'public', usage: true, create_schema: false }] },
+      tables:    { rows: [{ schema_name: 'public', name: 'users', kind: 'r', sel: true, ins: false, upd: false, del: false, trunc: false, refs: false, trig: false }] },
+      sequences: { rows: [{ schema_name: 'public', name: 'users_id_seq', usage: true, sel: true, upd: false }] },
+      functions: { rows: [{ schema_name: 'public', name: 'get_user', kind: 'f', args: 'id integer', execute: true }] },
+      types:     { rows: [{ schema_name: 'public', name: 'status_enum', kind: 'e', usage: true }] },
+      fdws:      { rows: [{ name: 'postgres_fdw', usage: false }] },
+      foreignServers: { rows: [{ name: 'remote_server', usage: true }] },
+    }
+    const order = ['databases', 'schemas', 'tables', 'sequences', 'functions', 'types', 'fdws', 'foreignServers'] as const
+    const mockQuery = vi.fn()
+    for (const key of order) {
+      const response = overrides[key] ?? defaults[key]
+      if (response instanceof Error) {
+        mockQuery.mockRejectedValueOnce(response)
+      } else {
+        mockQuery.mockResolvedValueOnce(response)
+      }
+    }
+    return { query: mockQuery } as unknown as Pool
+  }
+
+  it('maps all 8 sections from parallel queries', async () => {
+    const pool = matrixPool()
+    const result = await getPermissionsMatrix(pool, 'readonly')
+
+    expect(result.rolename).toBe('readonly')
+    expect(result.databases).toEqual([{ name: 'postgres', connect: true, create: false, temp: true }])
+    expect(result.schemas).toEqual([{ name: 'public', usage: true, create: false }])
+    expect(result.tables).toEqual([{ schema: 'public', name: 'users', kind: 'r', select: true, insert: false, update: false, delete: false, truncate: false, references: false, trigger: false }])
+    expect(result.sequences).toEqual([{ schema: 'public', name: 'users_id_seq', usage: true, select: true, update: false }])
+    expect(result.functions).toEqual([{ schema: 'public', name: 'get_user', kind: 'f', args: 'id integer', execute: true }])
+    expect(result.types).toEqual([{ schema: 'public', name: 'status_enum', kind: 'e', usage: true }])
+    expect(result.fdws).toEqual([{ name: 'postgres_fdw', usage: false }])
+    expect(result.foreignServers).toEqual([{ name: 'remote_server', usage: true }])
+  })
+
+  it('returns empty array for a section when its query throws (safe wrapper)', async () => {
+    const pool = matrixPool({ schemas: new Error('permission denied on pg_namespace') })
+    const result = await getPermissionsMatrix(pool, 'limited')
+
+    expect(result.databases).toHaveLength(1)
+    expect(result.schemas).toEqual([])   // safe() caught the error
+    expect(result.tables).toHaveLength(1) // other sections unaffected
+  })
+
+  it('correctly maps field aliases for databases (create_db → create)', async () => {
+    const pool = matrixPool({
+      databases: { rows: [{ name: 'mydb', connect: false, create_db: true, temp: false }] },
+    })
+    const result = await getPermissionsMatrix(pool, 'dba')
+    expect(result.databases[0]).toEqual({ name: 'mydb', connect: false, create: true, temp: false })
+  })
+
+  it('correctly maps field aliases for schemas (create_schema → create)', async () => {
+    const pool = matrixPool({
+      schemas: { rows: [{ name: 'app', usage: false, create_schema: true }] },
+    })
+    const result = await getPermissionsMatrix(pool, 'dba')
+    expect(result.schemas[0]).toEqual({ name: 'app', usage: false, create: true })
+  })
+
+  it('correctly maps table field aliases (sel/ins/upd/del/trunc/refs/trig)', async () => {
+    const pool = matrixPool({
+      tables: { rows: [{ schema_name: 'public', name: 't', kind: 'r', sel: false, ins: true, upd: true, del: true, trunc: false, refs: true, trig: false }] },
+    })
+    const result = await getPermissionsMatrix(pool, 'writer')
+    expect(result.tables[0]).toMatchObject({ select: false, insert: true, update: true, delete: true, truncate: false, references: true, trigger: false })
+  })
+
+  it('returns empty arrays for all sections when every query throws', async () => {
+    const err = new Error('no access')
+    const pool = matrixPool({
+      databases: err, schemas: err, tables: err, sequences: err,
+      functions: err, types: err, fdws: err, foreignServers: err,
+    })
+    const result = await getPermissionsMatrix(pool, 'nobody')
+    expect(result.databases).toEqual([])
+    expect(result.schemas).toEqual([])
+    expect(result.tables).toEqual([])
+    expect(result.sequences).toEqual([])
+    expect(result.functions).toEqual([])
+    expect(result.types).toEqual([])
+    expect(result.fdws).toEqual([])
+    expect(result.foreignServers).toEqual([])
   })
 })
 

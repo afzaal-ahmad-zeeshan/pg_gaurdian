@@ -4,7 +4,7 @@
 import { type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ServerProvider } from '@/context/ServerContext'
-import type { PgRole, PgDatabase, PgCurrentUser, ServerConnection } from '@/types'
+import type { PgRole, PgDatabase, PgCurrentUser, ServerConnection, PermissionsMatrix } from '@/types'
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -78,6 +78,36 @@ export const mockCurrentUser: PgCurrentUser = {
   dbPrivileges: [
     { datname: 'postgres', canConnect: true, canCreate: false, canTemp: true },
     { datname: 'testdb', canConnect: true, canCreate: true, canTemp: true },
+  ],
+}
+
+export const mockMatrix: PermissionsMatrix = {
+  rolename: 'admin',
+  databases: [
+    { name: 'postgres', connect: true, create: false, temp: true },
+    { name: 'testdb',   connect: true, create: true,  temp: true },
+  ],
+  schemas: [
+    { name: 'public', usage: true, create: false },
+  ],
+  tables: [
+    { schema: 'public', name: 'users', kind: 'r', select: true, insert: false, update: false, delete: false, truncate: false, references: false, trigger: false },
+    { schema: 'public', name: 'orders_view', kind: 'v', select: true, insert: false, update: false, delete: false, truncate: false, references: false, trigger: false },
+  ],
+  sequences: [
+    { schema: 'public', name: 'users_id_seq', usage: true, select: true, update: false },
+  ],
+  functions: [
+    { schema: 'public', name: 'get_user', kind: 'f', args: 'id integer', execute: true },
+  ],
+  types: [
+    { schema: 'public', name: 'status_enum', kind: 'e', usage: true },
+  ],
+  fdws: [
+    { name: 'postgres_fdw', usage: false },
+  ],
+  foreignServers: [
+    { name: 'remote_server', usage: true },
   ],
 }
 

@@ -1,6 +1,6 @@
 # pg_guardian — Test Report
 
-> Generated: 2026-03-25T01:58:11.918Z
+> Generated: 2026-03-25T02:19:58.837Z
 
 ---
 
@@ -8,7 +8,7 @@
 
 ### ✅ `api/pg.test.ts`
 
-13 passed · 0 failed · 0 skipped
+16 passed · 0 failed · 0 skipped
 
 - **POST /api/pg/test**
   - ✓ returns { ok: true } when SELECT 1 succeeds
@@ -27,6 +27,10 @@
 - **POST /api/pg/users**
   - ✓ returns { users, currentUser } on success
   - ✓ returns 400 when connection is missing
+- **POST /api/pg/permissions**
+  - ✓ returns the permissions matrix for the given role
+  - ✓ returns 400 when connection is missing
+  - ✓ returns 400 when rolename is missing
 
 ### ✅ `api/servers.test.ts`
 
@@ -53,7 +57,7 @@
 
 ### ✅ `queries.test.ts`
 
-17 passed · 0 failed · 0 skipped
+23 passed · 0 failed · 0 skipped
 
 - **getRoles**
   - ✓ returns roles with memberof normalized to an array
@@ -77,6 +81,13 @@
   - ✓ escapes single quotes in passwords
 - **dropRole**
   - ✓ sends DROP ROLE IF EXISTS with quoted name
+- **getPermissionsMatrix**
+  - ✓ maps all 8 sections from parallel queries
+  - ✓ returns empty array for a section when its query throws (safe wrapper)
+  - ✓ correctly maps field aliases for databases (create_db → create)
+  - ✓ correctly maps field aliases for schemas (create_schema → create)
+  - ✓ correctly maps table field aliases (sel/ins/upd/del/trunc/refs/trig)
+  - ✓ returns empty arrays for all sections when every query throws
 - **grantRole**
   - ✓ sends GRANT role TO role
 - **revokeRole**
@@ -170,6 +181,35 @@
   - ✓ renders a row for each database
   - ✓ shows database owner OID
   - ✓ renders table headers
+
+### ✅ `components/PermissionsMatrix.test.tsx`
+
+17 passed · 0 failed · 0 skipped
+
+- **PermissionsMatrix — no server configured**
+  - ✓ shows "No servers configured" message
+  - ✓ does not call fetch when no server is configured
+- **PermissionsMatrix — auto-selection**
+  - ✓ auto-selects the only user when there is one
+  - ✓ auto-selects the first user when multiple users exist
+  - ✓ fetches the matrix for the auto-selected role
+- **PermissionsMatrix — section headings**
+  - ✓ renders all 8 section titles after data loads
+- **PermissionsMatrix — permission display**
+  - ✓ shows ✓ for granted permissions
+  - ✓ shows — for denied permissions
+  - ✓ renders table/view object names
+  - ✓ renders schema names
+- **PermissionsMatrix — kind badges**
+  - ✓ shows TABLE badge for regular tables
+  - ✓ shows VIEW badge for views
+  - ✓ shows FN badge for functions
+  - ✓ shows ENUM badge for enum types
+- **PermissionsMatrix — loading and empty states**
+  - ✓ shows loading indicator while users are being fetched
+  - ✓ shows "No login roles found" when the server has no login roles
+- **PermissionsMatrix — summary strip**
+  - ✓ shows resource counts in the summary strip
 
 ### ✅ `components/RolesPage.test.tsx`
 
@@ -291,12 +331,12 @@
 
 | Category | Files | Passed | Failed | Skipped |
 |----------|------:|-------:|-------:|--------:|
-| ✅ API Routes | 2 | 23 | 0 | 0 |
-| ✅ DB Queries | 1 | 17 | 0 | 0 |
+| ✅ API Routes | 2 | 26 | 0 | 0 |
+| ✅ DB Queries | 1 | 23 | 0 | 0 |
 | ✅ Server Store | 1 | 11 | 0 | 0 |
 | ✅ Hooks | 1 | 4 | 0 | 0 |
 | ✅ Pure Utilities | 1 | 6 | 0 | 0 |
-| ✅ Components | 7 | 39 | 0 | 0 |
+| ✅ Components | 8 | 56 | 0 | 0 |
 | ✅ Context | 1 | 10 | 0 | 0 |
 | ✅ User Flows | 2 | 13 | 0 | 0 |
-| **Total** | **16** | **123** | **0** | **0** |
+| **Total** | **17** | **149** | **0** | **0** |
