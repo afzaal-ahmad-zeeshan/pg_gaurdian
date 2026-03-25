@@ -3,9 +3,8 @@ import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 import { AddServerDialog } from './AddServerDialog'
-import { Plus, Plug, Trash2 } from 'lucide-react'
+import { Plus, Plug, Trash2, Server, Database, User, Globe, Lock, LockOpen } from 'lucide-react'
 import { useServerContext } from '@/context/ServerContext'
 import { ServerConnection } from '@/types'
 
@@ -50,26 +49,43 @@ export function ServersPage() {
           return (
             <Card key={server.id}>
               <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">{server.name}</CardTitle>
-                  <div className="flex items-center gap-1">
-                    <Badge variant="outline">{server.database}</Badge>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                      onClick={() => removeServer(server.id)}
-                      title="Remove from browser"
-                    >
-                      <Trash2 size={14} />
-                    </Button>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Server size={15} className="text-muted-foreground shrink-0 mt-0.5" />
+                    <CardTitle className="text-base truncate">{server.name}</CardTitle>
                   </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+                    onClick={() => removeServer(server.id)}
+                    title="Remove from browser"
+                  >
+                    <Trash2 size={14} />
+                  </Button>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
-                <p className="text-sm text-muted-foreground font-mono">
-                  {server.user}@{server.host}:{server.port}
-                </p>
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Globe size={13} className="shrink-0" />
+                    <span className="font-mono truncate">{server.host}:{server.port}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Database size={13} className="shrink-0" />
+                    <span className="font-mono truncate">{server.database}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <User size={13} className="shrink-0" />
+                    <span className="font-mono truncate">{server.user}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    {server.ssl
+                      ? <><Lock size={13} className="shrink-0 text-green-500" /><span className="text-green-500 text-xs font-medium">SSL enabled</span></>
+                      : <><LockOpen size={13} className="shrink-0 text-muted-foreground" /><span className="text-muted-foreground text-xs">No SSL</span></>
+                    }
+                  </div>
+                </div>
                 <Button
                   size="sm"
                   variant="outline"

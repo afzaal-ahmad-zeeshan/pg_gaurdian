@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Database, FolderOpen, Table2, Hash, Code2, Tag, Globe, Plug,
-  LucideIcon,
+  UserCog, LucideIcon,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -370,23 +370,27 @@ export function PermissionsMatrix() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
           {/* Role selector */}
           {users.length > 0 && (
-            <Select value={selectedRole} onValueChange={setUserPickedRole}>
-              <SelectTrigger className="w-48">
-                <SelectValue placeholder="Select role…">
-                  {selectedRole || 'Select role…'}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {users.map((u) => (
-                  <SelectItem key={u.rolname} value={u.rolname}>
-                    <span className="font-mono text-sm">{u.rolname}</span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="flex items-center gap-1.5">
+              <UserCog size={14} className="text-muted-foreground shrink-0" />
+              <span className="text-sm text-muted-foreground whitespace-nowrap">Role</span>
+              <Select value={selectedRole} onValueChange={setUserPickedRole}>
+                <SelectTrigger className="w-48">
+                  <SelectValue placeholder="Select role…">
+                    {selectedRole || 'Select role…'}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {users.map((u) => (
+                    <SelectItem key={u.rolname} value={u.rolname}>
+                      <span className="font-mono text-sm">{u.rolname}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           )}
           <ServerSelect />
         </div>

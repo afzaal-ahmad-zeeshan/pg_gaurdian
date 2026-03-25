@@ -1,4 +1,5 @@
 'use client'
+import { Server } from 'lucide-react'
 import { useServerContext } from '@/context/ServerContext'
 import {
   Select,
@@ -18,24 +19,28 @@ export function ServerSelect() {
   if (servers.length <= 1) return null
 
   return (
-    <Select value={selectedId} onValueChange={(v) => setSelectedId(v ?? '')}>
-      <SelectTrigger className="w-52">
-        <SelectValue>
-          {servers.find((s) => s.id === selectedId)?.name ?? 'Select server'}
-        </SelectValue>
-      </SelectTrigger>
-      <SelectContent align="end">
-        {servers.map((s) => (
-          <SelectItem key={s.id} value={s.id}>
-            <div className="flex flex-col py-0.5">
-              <span className="font-medium">{s.name}</span>
-              <span className="text-xs text-muted-foreground font-mono">
-                {s.user}@{s.host}:{s.port}
-              </span>
-            </div>
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <div className="flex items-center gap-1.5">
+      <Server size={14} className="text-muted-foreground shrink-0" />
+      <span className="text-sm text-muted-foreground whitespace-nowrap">Server</span>
+      <Select value={selectedId} onValueChange={(v) => setSelectedId(v ?? '')}>
+        <SelectTrigger className="w-52">
+          <SelectValue>
+            {servers.find((s) => s.id === selectedId)?.name ?? 'Select server'}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent align="end">
+          {servers.map((s) => (
+            <SelectItem key={s.id} value={s.id}>
+              <div className="flex flex-col py-0.5">
+                <span className="font-medium">{s.name}</span>
+                <span className="text-xs text-muted-foreground font-mono">
+                  {s.user}@{s.host}:{s.port}
+                </span>
+              </div>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
   )
 }
