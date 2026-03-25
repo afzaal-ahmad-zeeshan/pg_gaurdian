@@ -1,6 +1,6 @@
 # pg_guardian — Test Report
 
-> Generated: 2026-03-25T02:19:58.837Z
+> Generated: 2026-03-25T22:56:52.950Z
 
 ---
 
@@ -179,7 +179,7 @@
   - ✓ shows loading indicator while fetching
 - **DatabasesPage — databases table**
   - ✓ renders a row for each database
-  - ✓ shows database owner OID
+  - ✓ shows database owner name
   - ✓ renders table headers
 
 ### ✅ `components/PermissionsMatrix.test.tsx`

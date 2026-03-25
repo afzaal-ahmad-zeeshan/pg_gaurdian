@@ -30,6 +30,7 @@ export const mockServer2: ServerConnection = {
 
 export const mockRoles: PgRole[] = [
   {
+    oid: 10,
     rolname: 'admin',
     rolsuper: true,
     rolinherit: true,
@@ -43,6 +44,7 @@ export const mockRoles: PgRole[] = [
     memberof: [],
   },
   {
+    oid: 16384,
     rolname: 'readonly',
     rolsuper: false,
     rolinherit: true,
@@ -58,8 +60,8 @@ export const mockRoles: PgRole[] = [
 ]
 
 export const mockDatabases: PgDatabase[] = [
-  { datname: 'postgres', datdba: 10, datacl: null },
-  { datname: 'testdb', datdba: 16384, datacl: ['=Tc/postgres', 'postgres=CTc/postgres'] },
+  { oid: 1, datname: 'postgres', owner: 'pg_admin', datacl: null },
+  { oid: 2, datname: 'testdb', owner: 'testuser', datacl: ['=Tc/postgres', 'postgres=CTc/postgres'] },
 ]
 
 export const mockCurrentUser: PgCurrentUser = {

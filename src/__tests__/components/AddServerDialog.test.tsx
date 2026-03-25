@@ -46,7 +46,7 @@ describe('AddServerDialog — form fields', () => {
 
   it('renders persist checkbox checked by default', () => {
     renderDialog()
-    const checkbox = screen.getByRole('checkbox') as HTMLInputElement
+    const checkbox = screen.getByLabelText(/remember in this browser/i) as HTMLInputElement
     expect(checkbox.checked).toBe(true)
   })
 })

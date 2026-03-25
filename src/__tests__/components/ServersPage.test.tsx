@@ -28,7 +28,8 @@ describe('ServersPage — with a server', () => {
     render(<ServersPage />, { wrapper: WrapperWithServer })
     await waitFor(() => {
       expect(screen.getByText('Test Server')).toBeInTheDocument()
-      expect(screen.getByText(/testuser@localhost:5432/i)).toBeInTheDocument()
+      expect(screen.getByText(/localhost:5432/i)).toBeInTheDocument()
+      expect(screen.getByText('testuser')).toBeInTheDocument()
     })
   })
 

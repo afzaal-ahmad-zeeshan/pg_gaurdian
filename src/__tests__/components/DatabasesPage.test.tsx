@@ -45,7 +45,7 @@ describe('DatabasesPage — databases table', () => {
     })
   })
 
-  it('shows database owner OID', async () => {
+  it('shows database owner name', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValueOnce({
@@ -56,8 +56,7 @@ describe('DatabasesPage — databases table', () => {
     render(<DatabasesPage />, { wrapper: WrapperWithServer })
 
     await waitFor(() => {
-      // datdba for 'postgres' is 10
-      expect(screen.getByText('10')).toBeInTheDocument()
+      expect(screen.getByText('pg_admin')).toBeInTheDocument()
     })
   })
 
@@ -72,8 +71,9 @@ describe('DatabasesPage — databases table', () => {
     render(<DatabasesPage />, { wrapper: WrapperWithServer })
 
     await waitFor(() => {
+      expect(screen.getByText('OID')).toBeInTheDocument()
       expect(screen.getByText('Name')).toBeInTheDocument()
-      expect(screen.getByText('Owner OID')).toBeInTheDocument()
+      expect(screen.getByText('Owner')).toBeInTheDocument()
     })
   })
 })
