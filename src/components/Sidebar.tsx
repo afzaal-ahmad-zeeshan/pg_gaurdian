@@ -2,12 +2,13 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Database, Users, Shield, Server } from 'lucide-react'
+import { Database, Users, Shield, Server, UserCog } from 'lucide-react'
 import { ThemeToggle } from './ThemeToggle'
 import { ServerSwitcher } from './ServerSwitcher'
 
 const nav = [
   { href: '/', label: 'Servers', icon: Server },
+  { href: '/users', label: 'Users', icon: UserCog },
   { href: '/roles', label: 'Roles', icon: Users },
   { href: '/databases', label: 'Databases', icon: Database },
   { href: '/permissions', label: 'Permissions', icon: Shield },
