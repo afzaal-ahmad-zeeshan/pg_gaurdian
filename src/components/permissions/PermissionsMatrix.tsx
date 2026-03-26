@@ -5,6 +5,7 @@ import {
   Database, FolderOpen, Table2, Hash, Code2, Tag, Globe, Plug,
   UserCog, LucideIcon,
 } from 'lucide-react'
+import { SqlQueryButton } from '@/components/SqlQueryButton'
 import { Badge } from '@/components/ui/badge'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -62,15 +63,159 @@ const TYPE_KIND: Record<string, { label: string; cls: string }> = {
   b: { label: 'BASE',       cls: 'text-gray-500 border-gray-200' },
 }
 
+// ─── Per-section SQL strings ──────────────────────────────────────────────────
+
+const ER = `WITH effective_roles AS (
+  SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = $1
+  UNION ALL SELECT 0::oid
+  UNION ALL
+  SELECT m.roleid
+  FROM pg_catalog.pg_auth_members m
+  JOIN pg_catalog.pg_roles r ON r.oid = m.member AND r.rolname = $1
+)`
+
+const SQL_DATABASES = `${ER}
+SELECT
+  d.oid,
+  d.datname AS name,
+  (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = d.datdba) AS owner,
+  coalesce(bool_or(a.privilege_type = 'CONNECT'), false) AS connect,
+  coalesce(bool_or(a.privilege_type = 'CREATE'),  false) AS create_db,
+  coalesce(bool_or(a.privilege_type = 'TEMP'),    false) AS temp
+FROM pg_catalog.pg_database d
+LEFT JOIN LATERAL aclexplode(
+  coalesce(d.datacl, acldefault('d', d.datdba))
+) a ON a.grantee IN (SELECT oid FROM effective_roles)
+WHERE d.datistemplate = false
+GROUP BY d.oid, d.datname, d.datdba
+ORDER BY d.datname`
+
+const SQL_SCHEMAS = `${ER}
+SELECT
+  n.oid,
+  n.nspname AS name,
+  (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = n.nspowner) AS owner,
+  coalesce(bool_or(a.privilege_type = 'USAGE'),  false) AS usage,
+  coalesce(bool_or(a.privilege_type = 'CREATE'), false) AS create_schema
+FROM pg_catalog.pg_namespace n
+LEFT JOIN LATERAL aclexplode(
+  coalesce(n.nspacl, acldefault('n', n.nspowner))
+) a ON a.grantee IN (SELECT oid FROM effective_roles)
+WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname <> 'information_schema'
+GROUP BY n.oid, n.nspname, n.nspowner
+ORDER BY n.nspname`
+
+const SQL_TABLES = `${ER}
+SELECT
+  c.oid,
+  n.nspname AS schema_name, c.relname AS name,
+  (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = c.relowner) AS owner,
+  c.relkind::text AS kind,
+  coalesce(bool_or(a.privilege_type = 'SELECT'),     false) AS sel,
+  coalesce(bool_or(a.privilege_type = 'INSERT'),     false) AS ins,
+  coalesce(bool_or(a.privilege_type = 'UPDATE'),     false) AS upd,
+  coalesce(bool_or(a.privilege_type = 'DELETE'),     false) AS del,
+  coalesce(bool_or(a.privilege_type = 'TRUNCATE'),   false) AS trunc,
+  coalesce(bool_or(a.privilege_type = 'REFERENCES'), false) AS refs,
+  coalesce(bool_or(a.privilege_type = 'TRIGGER'),    false) AS trig
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN LATERAL aclexplode(
+  coalesce(c.relacl, acldefault('r', c.relowner))
+) a ON a.grantee IN (SELECT oid FROM effective_roles)
+WHERE c.relkind IN ('r','v','m','f','p')
+  AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+GROUP BY c.oid, n.nspname, c.relname, c.relkind, c.relowner
+ORDER BY n.nspname, c.relname`
+
+const SQL_SEQUENCES = `${ER}
+SELECT
+  c.oid,
+  n.nspname AS schema_name, c.relname AS name,
+  (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = c.relowner) AS owner,
+  coalesce(bool_or(a.privilege_type = 'USAGE'),  false) AS usage,
+  coalesce(bool_or(a.privilege_type = 'SELECT'), false) AS sel,
+  coalesce(bool_or(a.privilege_type = 'UPDATE'), false) AS upd
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN LATERAL aclexplode(
+  coalesce(c.relacl, acldefault('S', c.relowner))
+) a ON a.grantee IN (SELECT oid FROM effective_roles)
+WHERE c.relkind = 'S'
+  AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+GROUP BY c.oid, n.nspname, c.relname, c.relowner
+ORDER BY n.nspname, c.relname`
+
+const SQL_ROUTINES = `${ER}
+SELECT
+  p.oid,
+  n.nspname AS schema_name, p.proname AS name,
+  (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = p.proowner) AS owner,
+  p.prokind::text AS kind,
+  pg_get_function_identity_arguments(p.oid) AS args,
+  coalesce(bool_or(a.privilege_type = 'EXECUTE'), false) AS execute
+FROM pg_catalog.pg_proc p
+JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+LEFT JOIN LATERAL aclexplode(
+  coalesce(p.proacl, acldefault('f', p.proowner))
+) a ON a.grantee IN (SELECT oid FROM effective_roles)
+WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+GROUP BY p.oid, n.nspname, p.proname, p.prokind, p.proowner
+ORDER BY n.nspname, p.proname, p.oid`
+
+const SQL_TYPES = `${ER}
+SELECT
+  t.oid,
+  n.nspname AS schema_name, t.typname AS name,
+  (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = t.typowner) AS owner,
+  t.typtype::text AS kind,
+  coalesce(bool_or(a.privilege_type = 'USAGE'), false) AS usage
+FROM pg_catalog.pg_type t
+JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+LEFT JOIN LATERAL aclexplode(
+  coalesce(t.typacl, acldefault('T', t.typowner))
+) a ON a.grantee IN (SELECT oid FROM effective_roles)
+WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+  AND t.typtype IN ('d','e','r','m') AND t.typelem = 0
+GROUP BY t.oid, n.nspname, t.typname, t.typtype, t.typowner
+ORDER BY n.nspname, t.typname`
+
+const SQL_FDWS = `${ER}
+SELECT
+  w.oid,
+  w.fdwname AS name,
+  (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = w.fdwowner) AS owner,
+  coalesce(bool_or(a.privilege_type = 'USAGE'), false) AS usage
+FROM pg_catalog.pg_foreign_data_wrapper w
+LEFT JOIN LATERAL aclexplode(
+  coalesce(w.fdwacl, acldefault('F', w.fdwowner))
+) a ON a.grantee IN (SELECT oid FROM effective_roles)
+GROUP BY w.oid, w.fdwname, w.fdwowner
+ORDER BY w.fdwname`
+
+const SQL_FOREIGN_SERVERS = `${ER}
+SELECT
+  s.oid,
+  s.srvname AS name,
+  (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = s.srvowner) AS owner,
+  coalesce(bool_or(a.privilege_type = 'USAGE'), false) AS usage
+FROM pg_catalog.pg_foreign_server s
+LEFT JOIN LATERAL aclexplode(
+  coalesce(s.srvacl, acldefault('s', s.srvowner))
+) a ON a.grantee IN (SELECT oid FROM effective_roles)
+GROUP BY s.oid, s.srvname, s.srvowner
+ORDER BY s.srvname`
+
 // ─── Section wrapper ──────────────────────────────────────────────────────────
 
 function Section({
-  icon: Icon, title, count, empty, children,
+  icon: Icon, title, count, empty, sql, children,
 }: {
   icon: LucideIcon
   title: string
   count: number
   empty: string
+  sql: string
   children: React.ReactNode
 }) {
   return (
@@ -79,6 +224,7 @@ function Section({
         <Icon size={15} className="text-muted-foreground" />
         <span className="font-medium text-sm">{title}</span>
         <Badge variant="secondary" className="text-xs h-4 px-1.5">{count}</Badge>
+        <SqlQueryButton queries={{ sql }} />
       </div>
       {count === 0
         ? <p className="text-xs text-muted-foreground pl-5">{empty}</p>
@@ -93,12 +239,26 @@ function Section({
 
 // ─── Per-section tables ───────────────────────────────────────────────────────
 
+function OidCell({ oid }: { oid: number }) {
+  return (
+    <TableCell className="font-mono text-xs text-muted-foreground w-20 shrink-0">{oid}</TableCell>
+  )
+}
+
+function OwnerCell({ owner }: { owner: string }) {
+  return (
+    <TableCell className="font-mono text-xs text-muted-foreground">{owner}</TableCell>
+  )
+}
+
 function DatabasesTable({ rows }: { rows: DatabasePermission[] }) {
   return (
     <Table>
       <TableHeader>
         <TableRow>
+          <TableHead className="w-20 text-muted-foreground">OID</TableHead>
           <TableHead className="min-w-40">Database</TableHead>
+          <TableHead>Owner</TableHead>
           <TableHead className="text-center w-24">CONNECT</TableHead>
           <TableHead className="text-center w-24">CREATE</TableHead>
           <TableHead className="text-center w-24">TEMP</TableHead>
@@ -107,7 +267,9 @@ function DatabasesTable({ rows }: { rows: DatabasePermission[] }) {
       <TableBody>
         {rows.map((r) => (
           <TableRow key={r.name}>
+            <OidCell oid={r.oid} />
             <TableCell className="font-mono text-sm">{r.name}</TableCell>
+            <OwnerCell owner={r.owner} />
             <TableCell className="text-center"><Perm on={r.connect} /></TableCell>
             <TableCell className="text-center"><Perm on={r.create} /></TableCell>
             <TableCell className="text-center"><Perm on={r.temp} /></TableCell>
@@ -123,7 +285,9 @@ function SchemasTable({ rows }: { rows: SchemaPermission[] }) {
     <Table>
       <TableHeader>
         <TableRow>
+          <TableHead className="w-20 text-muted-foreground">OID</TableHead>
           <TableHead className="min-w-40">Schema</TableHead>
+          <TableHead>Owner</TableHead>
           <TableHead className="text-center w-24">USAGE</TableHead>
           <TableHead className="text-center w-24">CREATE</TableHead>
         </TableRow>
@@ -131,7 +295,9 @@ function SchemasTable({ rows }: { rows: SchemaPermission[] }) {
       <TableBody>
         {rows.map((r) => (
           <TableRow key={r.name}>
+            <OidCell oid={r.oid} />
             <TableCell className="font-mono text-sm">{r.name}</TableCell>
+            <OwnerCell owner={r.owner} />
             <TableCell className="text-center"><Perm on={r.usage} /></TableCell>
             <TableCell className="text-center"><Perm on={r.create} /></TableCell>
           </TableRow>
@@ -146,7 +312,9 @@ function TablesTable({ rows }: { rows: TablePermission[] }) {
     <Table>
       <TableHeader>
         <TableRow>
+          <TableHead className="w-20 text-muted-foreground">OID</TableHead>
           <TableHead className="min-w-48">Object</TableHead>
+          <TableHead>Owner</TableHead>
           <TableHead className="text-center w-8 px-1">SELECT</TableHead>
           <TableHead className="text-center w-8 px-1">INSERT</TableHead>
           <TableHead className="text-center w-8 px-1">UPDATE</TableHead>
@@ -159,12 +327,14 @@ function TablesTable({ rows }: { rows: TablePermission[] }) {
       <TableBody>
         {rows.map((r) => (
           <TableRow key={`${r.schema}.${r.name}`}>
+            <OidCell oid={r.oid} />
             <TableCell className="font-mono text-sm">
               <span className="flex items-center gap-1.5 flex-wrap">
                 <span>{r.schema}.{r.name}</span>
                 <KindBadge kind={r.kind} map={TABLE_KIND} />
               </span>
             </TableCell>
+            <OwnerCell owner={r.owner} />
             <TableCell className="text-center px-1"><Perm on={r.select} /></TableCell>
             <TableCell className="text-center px-1"><Perm on={r.insert} /></TableCell>
             <TableCell className="text-center px-1"><Perm on={r.update} /></TableCell>
@@ -184,7 +354,9 @@ function SequencesTable({ rows }: { rows: SequencePermission[] }) {
     <Table>
       <TableHeader>
         <TableRow>
+          <TableHead className="w-20 text-muted-foreground">OID</TableHead>
           <TableHead className="min-w-48">Sequence</TableHead>
+          <TableHead>Owner</TableHead>
           <TableHead className="text-center w-24">USAGE</TableHead>
           <TableHead className="text-center w-24">SELECT</TableHead>
           <TableHead className="text-center w-24">UPDATE</TableHead>
@@ -193,7 +365,9 @@ function SequencesTable({ rows }: { rows: SequencePermission[] }) {
       <TableBody>
         {rows.map((r) => (
           <TableRow key={`${r.schema}.${r.name}`}>
+            <OidCell oid={r.oid} />
             <TableCell className="font-mono text-sm">{r.schema}.{r.name}</TableCell>
+            <OwnerCell owner={r.owner} />
             <TableCell className="text-center"><Perm on={r.usage} /></TableCell>
             <TableCell className="text-center"><Perm on={r.select} /></TableCell>
             <TableCell className="text-center"><Perm on={r.update} /></TableCell>
@@ -209,13 +383,16 @@ function FunctionsTable({ rows }: { rows: FunctionPermission[] }) {
     <Table>
       <TableHeader>
         <TableRow>
+          <TableHead className="w-20 text-muted-foreground">OID</TableHead>
           <TableHead className="min-w-64">Routine</TableHead>
+          <TableHead>Owner</TableHead>
           <TableHead className="text-center w-24">EXECUTE</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
-        {rows.map((r, i) => (
-          <TableRow key={i}>
+        {rows.map((r) => (
+          <TableRow key={r.oid}>
+            <OidCell oid={r.oid} />
             <TableCell className="font-mono text-sm">
               <span className="flex items-center gap-1.5 flex-wrap">
                 <span className="truncate max-w-xs" title={`${r.schema}.${r.name}(${r.args})`}>
@@ -225,6 +402,7 @@ function FunctionsTable({ rows }: { rows: FunctionPermission[] }) {
                 <KindBadge kind={r.kind} map={FUNC_KIND} />
               </span>
             </TableCell>
+            <OwnerCell owner={r.owner} />
             <TableCell className="text-center"><Perm on={r.execute} /></TableCell>
           </TableRow>
         ))}
@@ -238,19 +416,23 @@ function TypesTable({ rows }: { rows: TypePermission[] }) {
     <Table>
       <TableHeader>
         <TableRow>
+          <TableHead className="w-20 text-muted-foreground">OID</TableHead>
           <TableHead className="min-w-48">Type</TableHead>
+          <TableHead>Owner</TableHead>
           <TableHead className="text-center w-24">USAGE</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {rows.map((r) => (
           <TableRow key={`${r.schema}.${r.name}`}>
+            <OidCell oid={r.oid} />
             <TableCell className="font-mono text-sm">
               <span className="flex items-center gap-1.5 flex-wrap">
                 <span>{r.schema}.{r.name}</span>
                 <KindBadge kind={r.kind} map={TYPE_KIND} />
               </span>
             </TableCell>
+            <OwnerCell owner={r.owner} />
             <TableCell className="text-center"><Perm on={r.usage} /></TableCell>
           </TableRow>
         ))}
@@ -264,14 +446,18 @@ function SimpleUsageTable({ rows, nameLabel }: { rows: (FdwPermission | ForeignS
     <Table>
       <TableHeader>
         <TableRow>
+          <TableHead className="w-20 text-muted-foreground">OID</TableHead>
           <TableHead className="min-w-40">{nameLabel}</TableHead>
+          <TableHead>Owner</TableHead>
           <TableHead className="text-center w-24">USAGE</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {rows.map((r) => (
           <TableRow key={r.name}>
+            <OidCell oid={r.oid} />
             <TableCell className="font-mono text-sm">{r.name}</TableCell>
+            <OwnerCell owner={r.owner} />
             <TableCell className="text-center"><Perm on={r.usage} /></TableCell>
           </TableRow>
         ))}
@@ -444,49 +630,49 @@ export function PermissionsMatrix() {
 
           {/* ── Databases ── */}
           <Section icon={Database} title="Databases" count={mx.databases.length}
-            empty="No databases found.">
+            empty="No databases found." sql={SQL_DATABASES}>
             <DatabasesTable rows={mx.databases} />
           </Section>
 
           {/* ── Schemas ── */}
           <Section icon={FolderOpen} title="Schemas" count={mx.schemas.length}
-            empty="No user schemas found.">
+            empty="No user schemas found." sql={SQL_SCHEMAS}>
             <SchemasTable rows={mx.schemas} />
           </Section>
 
           {/* ── Tables & Views ── */}
           <Section icon={Table2} title="Tables, Views & Materialized Views"
-            count={mx.tables.length} empty="No tables or views found.">
+            count={mx.tables.length} empty="No tables or views found." sql={SQL_TABLES}>
             <TablesTable rows={mx.tables} />
           </Section>
 
           {/* ── Sequences ── */}
           <Section icon={Hash} title="Sequences" count={mx.sequences.length}
-            empty="No sequences found.">
+            empty="No sequences found." sql={SQL_SEQUENCES}>
             <SequencesTable rows={mx.sequences} />
           </Section>
 
           {/* ── Routines ── */}
           <Section icon={Code2} title="Routines (functions, procedures, aggregates)"
-            count={mx.functions.length} empty="No user-defined routines found.">
+            count={mx.functions.length} empty="No user-defined routines found." sql={SQL_ROUTINES}>
             <FunctionsTable rows={mx.functions} />
           </Section>
 
           {/* ── Types ── */}
           <Section icon={Tag} title="Types (domains, enums, ranges)"
-            count={mx.types.length} empty="No user-defined types found.">
+            count={mx.types.length} empty="No user-defined types found." sql={SQL_TYPES}>
             <TypesTable rows={mx.types} />
           </Section>
 
           {/* ── Foreign Data Wrappers ── */}
           <Section icon={Globe} title="Foreign Data Wrappers"
-            count={mx.fdws.length} empty="No foreign data wrappers installed.">
+            count={mx.fdws.length} empty="No foreign data wrappers installed." sql={SQL_FDWS}>
             <SimpleUsageTable rows={mx.fdws} nameLabel="FDW" />
           </Section>
 
           {/* ── Foreign Servers ── */}
           <Section icon={Plug} title="Foreign Servers"
-            count={mx.foreignServers.length} empty="No foreign servers configured.">
+            count={mx.foreignServers.length} empty="No foreign servers configured." sql={SQL_FOREIGN_SERVERS}>
             <SimpleUsageTable rows={mx.foreignServers} nameLabel="Server" />
           </Section>
         </div>

@@ -205,10 +205,12 @@ export async function getPermissionsMatrix(pool: Pool, rolename: string): Promis
     await Promise.all([
 
       // Databases – cluster-wide, always fully visible via pg_database
-      safe<{ name: string; connect: boolean; create_db: boolean; temp: boolean }>(`
+      safe<{ oid: number; name: string; owner: string; connect: boolean; create_db: boolean; temp: boolean }>(`
         ${er}
         SELECT
+          d.oid,
           d.datname AS name,
+          (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = d.datdba) AS owner,
           coalesce(bool_or(a.privilege_type = 'CONNECT'), false) AS connect,
           coalesce(bool_or(a.privilege_type = 'CREATE'),  false) AS create_db,
           coalesce(bool_or(a.privilege_type = 'TEMP'),    false) AS temp
@@ -217,15 +219,17 @@ export async function getPermissionsMatrix(pool: Pool, rolename: string): Promis
           coalesce(d.datacl, acldefault('d', d.datdba))
         ) a ON a.grantee IN (SELECT oid FROM effective_roles)
         WHERE d.datistemplate = false
-        GROUP BY d.datname
+        GROUP BY d.oid, d.datname, d.datdba
         ORDER BY d.datname
       `, [rolename]),
 
       // Schemas – all schemas in the connected database, even ones with no access
-      safe<{ name: string; usage: boolean; create_schema: boolean }>(`
+      safe<{ oid: number; name: string; owner: string; usage: boolean; create_schema: boolean }>(`
         ${er}
         SELECT
+          n.oid,
           n.nspname AS name,
+          (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = n.nspowner) AS owner,
           coalesce(bool_or(a.privilege_type = 'USAGE'),  false) AS usage,
           coalesce(bool_or(a.privilege_type = 'CREATE'), false) AS create_schema
         FROM pg_catalog.pg_namespace n
@@ -233,20 +237,22 @@ export async function getPermissionsMatrix(pool: Pool, rolename: string): Promis
           coalesce(n.nspacl, acldefault('n', n.nspowner))
         ) a ON a.grantee IN (SELECT oid FROM effective_roles)
         WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname <> 'information_schema'
-        GROUP BY n.nspname
+        GROUP BY n.oid, n.nspname, n.nspowner
         ORDER BY n.nspname
       `, [rolename]),
 
       // Tables / views / materialized views / foreign tables / partitioned tables
       safe<{
-        schema_name: string; name: string; kind: string
+        oid: number; schema_name: string; name: string; owner: string; kind: string
         sel: boolean; ins: boolean; upd: boolean; del: boolean
         trunc: boolean; refs: boolean; trig: boolean
       }>(`
         ${er}
         SELECT
+          c.oid,
           n.nspname AS schema_name,
           c.relname AS name,
+          (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = c.relowner) AS owner,
           c.relkind::text AS kind,
           coalesce(bool_or(a.privilege_type = 'SELECT'),     false) AS sel,
           coalesce(bool_or(a.privilege_type = 'INSERT'),     false) AS ins,
@@ -262,16 +268,18 @@ export async function getPermissionsMatrix(pool: Pool, rolename: string): Promis
         ) a ON a.grantee IN (SELECT oid FROM effective_roles)
         WHERE c.relkind IN ('r','v','m','f','p')
           AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
-        GROUP BY n.nspname, c.relname, c.relkind
+        GROUP BY c.oid, n.nspname, c.relname, c.relkind, c.relowner
         ORDER BY n.nspname, c.relname
       `, [rolename]),
 
       // Sequences
-      safe<{ schema_name: string; name: string; usage: boolean; sel: boolean; upd: boolean }>(`
+      safe<{ oid: number; schema_name: string; name: string; owner: string; usage: boolean; sel: boolean; upd: boolean }>(`
         ${er}
         SELECT
+          c.oid,
           n.nspname AS schema_name,
           c.relname AS name,
+          (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = c.relowner) AS owner,
           coalesce(bool_or(a.privilege_type = 'USAGE'),  false) AS usage,
           coalesce(bool_or(a.privilege_type = 'SELECT'), false) AS sel,
           coalesce(bool_or(a.privilege_type = 'UPDATE'), false) AS upd
@@ -282,16 +290,18 @@ export async function getPermissionsMatrix(pool: Pool, rolename: string): Promis
         ) a ON a.grantee IN (SELECT oid FROM effective_roles)
         WHERE c.relkind = 'S'
           AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
-        GROUP BY n.nspname, c.relname
+        GROUP BY c.oid, n.nspname, c.relname, c.relowner
         ORDER BY n.nspname, c.relname
       `, [rolename]),
 
       // Functions / procedures / aggregates / window functions
-      safe<{ schema_name: string; name: string; kind: string; args: string; execute: boolean }>(`
+      safe<{ oid: number; schema_name: string; name: string; owner: string; kind: string; args: string; execute: boolean }>(`
         ${er}
         SELECT
+          p.oid,
           n.nspname AS schema_name,
           p.proname AS name,
+          (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = p.proowner) AS owner,
           p.prokind::text AS kind,
           pg_get_function_identity_arguments(p.oid) AS args,
           coalesce(bool_or(a.privilege_type = 'EXECUTE'), false) AS execute
@@ -301,16 +311,18 @@ export async function getPermissionsMatrix(pool: Pool, rolename: string): Promis
           coalesce(p.proacl, acldefault('f', p.proowner))
         ) a ON a.grantee IN (SELECT oid FROM effective_roles)
         WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
-        GROUP BY n.nspname, p.proname, p.prokind, p.oid
+        GROUP BY p.oid, n.nspname, p.proname, p.prokind, p.proowner
         ORDER BY n.nspname, p.proname, p.oid
       `, [rolename]),
 
       // Types (domains, enums, ranges, multiranges)
-      safe<{ schema_name: string; name: string; kind: string; usage: boolean }>(`
+      safe<{ oid: number; schema_name: string; name: string; owner: string; kind: string; usage: boolean }>(`
         ${er}
         SELECT
+          t.oid,
           n.nspname AS schema_name,
           t.typname AS name,
+          (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = t.typowner) AS owner,
           t.typtype::text AS kind,
           coalesce(bool_or(a.privilege_type = 'USAGE'), false) AS usage
         FROM pg_catalog.pg_type t
@@ -321,35 +333,39 @@ export async function getPermissionsMatrix(pool: Pool, rolename: string): Promis
         WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
           AND t.typtype IN ('d','e','r','m')
           AND t.typelem = 0
-        GROUP BY n.nspname, t.typname, t.typtype
+        GROUP BY t.oid, n.nspname, t.typname, t.typtype, t.typowner
         ORDER BY n.nspname, t.typname
       `, [rolename]),
 
       // Foreign data wrappers
-      safe<{ name: string; usage: boolean }>(`
+      safe<{ oid: number; name: string; owner: string; usage: boolean }>(`
         ${er}
         SELECT
+          w.oid,
           w.fdwname AS name,
+          (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = w.fdwowner) AS owner,
           coalesce(bool_or(a.privilege_type = 'USAGE'), false) AS usage
         FROM pg_catalog.pg_foreign_data_wrapper w
         LEFT JOIN LATERAL aclexplode(
           coalesce(w.fdwacl, acldefault('F', w.fdwowner))
         ) a ON a.grantee IN (SELECT oid FROM effective_roles)
-        GROUP BY w.fdwname
+        GROUP BY w.oid, w.fdwname, w.fdwowner
         ORDER BY w.fdwname
       `, [rolename]),
 
       // Foreign servers
-      safe<{ name: string; usage: boolean }>(`
+      safe<{ oid: number; name: string; owner: string; usage: boolean }>(`
         ${er}
         SELECT
+          s.oid,
           s.srvname AS name,
+          (SELECT rolname FROM pg_catalog.pg_roles WHERE oid = s.srvowner) AS owner,
           coalesce(bool_or(a.privilege_type = 'USAGE'), false) AS usage
         FROM pg_catalog.pg_foreign_server s
         LEFT JOIN LATERAL aclexplode(
           coalesce(s.srvacl, acldefault('s', s.srvowner))
         ) a ON a.grantee IN (SELECT oid FROM effective_roles)
-        GROUP BY s.srvname
+        GROUP BY s.oid, s.srvname, s.srvowner
         ORDER BY s.srvname
       `, [rolename]),
     ])
@@ -357,28 +373,33 @@ export async function getPermissionsMatrix(pool: Pool, rolename: string): Promis
   return {
     rolename,
     databases: databases.map((r): DatabasePermission => ({
-      name: r.name, connect: r.connect, create: r.create_db, temp: r.temp,
+      oid: r.oid, name: r.name, owner: r.owner,
+      connect: r.connect, create: r.create_db, temp: r.temp,
     })),
     schemas: schemas.map((r): SchemaPermission => ({
-      name: r.name, usage: r.usage, create: r.create_schema,
+      oid: r.oid, name: r.name, owner: r.owner,
+      usage: r.usage, create: r.create_schema,
     })),
     tables: tables.map((r): TablePermission => ({
-      schema: r.schema_name, name: r.name, kind: r.kind,
+      oid: r.oid, schema: r.schema_name, name: r.name, owner: r.owner, kind: r.kind,
       select: r.sel, insert: r.ins, update: r.upd, delete: r.del,
       truncate: r.trunc, references: r.refs, trigger: r.trig,
     })),
     sequences: sequences.map((r): SequencePermission => ({
-      schema: r.schema_name, name: r.name, usage: r.usage, select: r.sel, update: r.upd,
+      oid: r.oid, schema: r.schema_name, name: r.name, owner: r.owner,
+      usage: r.usage, select: r.sel, update: r.upd,
     })),
     functions: functions.map((r): FunctionPermission => ({
-      schema: r.schema_name, name: r.name, kind: r.kind, args: r.args, execute: r.execute,
+      oid: r.oid, schema: r.schema_name, name: r.name, owner: r.owner,
+      kind: r.kind, args: r.args, execute: r.execute,
     })),
     types: types.map((r): TypePermission => ({
-      schema: r.schema_name, name: r.name, kind: r.kind, usage: r.usage,
+      oid: r.oid, schema: r.schema_name, name: r.name, owner: r.owner,
+      kind: r.kind, usage: r.usage,
     })),
-    fdws: fdws.map((r): FdwPermission => ({ name: r.name, usage: r.usage })),
+    fdws: fdws.map((r): FdwPermission => ({ oid: r.oid, name: r.name, owner: r.owner, usage: r.usage })),
     foreignServers: foreignServers.map((r): ForeignServerPermission => ({
-      name: r.name, usage: r.usage,
+      oid: r.oid, name: r.name, owner: r.owner, usage: r.usage,
     })),
   }
 }

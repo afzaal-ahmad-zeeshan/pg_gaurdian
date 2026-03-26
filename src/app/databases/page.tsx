@@ -3,6 +3,13 @@ import { useQuery } from '@tanstack/react-query'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useServerContext } from '@/context/ServerContext'
 import { ServerSelect } from '@/components/ServerSelect'
+import { SqlQueryButton } from '@/components/SqlQueryButton'
+
+const DATABASES_SQL = `SELECT d.oid, d.datname, r.rolname AS owner, d.datacl::text[]
+FROM pg_catalog.pg_database d
+JOIN pg_catalog.pg_roles r ON r.oid = d.datdba
+WHERE d.datistemplate = false
+ORDER BY d.datname`
 
 export default function DatabasesPage() {
   const { servers, selectedId, selected } = useServerContext()
@@ -21,9 +28,12 @@ export default function DatabasesPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Databases</h1>
-          <p className="text-sm text-muted-foreground">Databases on the selected server</p>
+        <div className="flex items-center gap-2">
+          <div>
+            <h1 className="text-2xl font-semibold">Databases</h1>
+            <p className="text-sm text-muted-foreground">Databases on the selected server</p>
+          </div>
+          <SqlQueryButton queries={{ sql: DATABASES_SQL }} />
         </div>
         <ServerSelect />
       </div>

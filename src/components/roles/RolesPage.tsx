@@ -5,6 +5,28 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { PgRole } from '@/types'
 import { useServerContext } from '@/context/ServerContext'
 import { ServerSelect } from '@/components/ServerSelect'
+import { SqlQueryButton } from '@/components/SqlQueryButton'
+
+const ROLES_SQL = `SELECT
+  r.oid,
+  r.rolname,
+  r.rolsuper,
+  r.rolinherit,
+  r.rolcreaterole,
+  r.rolcreatedb,
+  r.rolcanlogin,
+  r.rolreplication,
+  r.rolbypassrls,
+  r.rolconnlimit,
+  r.rolvaliduntil::text,
+  ARRAY(
+    SELECT b.rolname
+    FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles b ON m.roleid = b.oid
+    WHERE m.member = r.oid
+  ) AS memberof
+FROM pg_catalog.pg_roles r
+ORDER BY r.rolname`
 
 export function RolesPage() {
   const { servers, selectedId, selected } = useServerContext()
@@ -23,9 +45,12 @@ export function RolesPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Roles</h1>
-          <p className="text-sm text-muted-foreground">View and manage PostgreSQL roles</p>
+        <div className="flex items-center gap-2">
+          <div>
+            <h1 className="text-2xl font-semibold">Roles</h1>
+            <p className="text-sm text-muted-foreground">View and manage PostgreSQL roles</p>
+          </div>
+          <SqlQueryButton queries={{ sql: ROLES_SQL }} />
         </div>
         <ServerSelect />
       </div>

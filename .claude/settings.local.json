@@ -9,7 +9,10 @@
       "Bash(npm test:*)",
       "Bash(npx vitest:*)",
       "Bash(xargs grep:*)",
-      "Bash(node -e \"const l = require\\(''./node_modules/lucide-react''\\); const want = [''Database'',''FolderOpen'',''Table2'',''Hash'',''Code2'',''Tag'',''Globe'',''Plug'',''Server'',''ChevronDown'',''CheckCircle2'',''Circle'',''FolderClosed'']; want.forEach\\(n => console.log\\(n, n in l ? ''OK'' : ''MISSING''\\)\\)\")"
+      "Bash(node -e \"const l = require\\(''./node_modules/lucide-react''\\); const want = [''Database'',''FolderOpen'',''Table2'',''Hash'',''Code2'',''Tag'',''Globe'',''Plug'',''Server'',''ChevronDown'',''CheckCircle2'',''Circle'',''FolderClosed'']; want.forEach\\(n => console.log\\(n, n in l ? ''OK'' : ''MISSING''\\)\\)\")",
+      "Bash(npm uninstall:*)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(''''deps:'''', list\\(d.get\\(''''dependencies'''',{}\\).keys\\(\\)\\)\\); print\\(''''devdeps:'''', list\\(d.get\\(''''devDependencies'''',{}\\).keys\\(\\)\\)\\)\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(k,v\\) for k,v in d.get\\(''''scripts'''',{}\\).items\\(\\)]\")"
     ]
   }
 }

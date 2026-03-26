@@ -1,6 +1,6 @@
 # pg_guardian
 
-A self-hostable web UI for managing PostgreSQL users, roles, and permissions. Connect to multiple Postgres servers, inspect roles, browse databases, and manage privileges — all from a clean, dark/light-mode interface. No desktop app, no separate backend: just deploy and go.
+A self-hostable web UI for managing PostgreSQL users, roles, and permissions. Connect to multiple Postgres servers, inspect roles, browse databases, and view privileges — all from a clean, dark/light-mode interface.
 
 ---
 
@@ -9,12 +9,13 @@ A self-hostable web UI for managing PostgreSQL users, roles, and permissions. Co
 | Feature | Description |
 | --- | --- |
 | **Multi-server support** | Add and switch between multiple Postgres connections |
-| **Role management** | View all roles with their attributes (login, superuser, createdb, replication, memberships) |
-| **Database browser** | List databases on the selected server |
-| **Permission matrix** | Inspect table-level privileges per role *(in progress)* |
+| **User management** | View all login roles with attributes and database privileges |
+| **Role management** | View all roles with attributes (superuser, createdb, replication, memberships) |
+| **Database browser** | List databases with owner info on the selected server |
+| **Permission matrix** | Inspect privileges per role across databases, schemas, tables, sequences, routines, types, FDWs, and foreign servers |
+| **SQL inspector** | Hover any section heading to see the exact query that was executed |
 | **Browser-local storage** | Connection credentials stay in your browser — the server never writes them to disk |
-| **Session-only connections** | Opt out of localStorage; credentials live only for the browser session |
-| **Theme switcher** | Light, Dark, and System themes — preference stored in localStorage |
+| **Theme switcher** | Light, Dark, and System themes |
 | **Connection tester** | Verify a connection before saving it |
 
 ---
@@ -24,7 +25,7 @@ A self-hostable web UI for managing PostgreSQL users, roles, and permissions. Co
 - **Framework** — Next.js 15 (App Router, Turbopack)
 - **Language** — TypeScript
 - **Database driver** — `pg` (node-postgres)
-- **UI** — Tailwind CSS v4 + shadcn/ui + Radix/Base UI
+- **UI** — Tailwind CSS v4 + Base UI + shadcn/ui
 - **State** — TanStack Query v5
 - **Theme** — next-themes
 
@@ -40,7 +41,7 @@ A self-hostable web UI for managing PostgreSQL users, roles, and permissions. Co
 ### Install and run
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/afzaal-ahmad-zeeshan/pg_gaurdian
 cd pg_gaurdian
 npm install
 npm run dev
@@ -52,51 +53,28 @@ Open [http://localhost:3000](http://localhost:3000).
 
 1. Click **Add Server** on the Servers page.
 2. Fill in your Postgres connection details (host, port, database, user, password).
-3. Check **"Remember in this browser"** if you want the credentials persisted to localStorage. Uncheck for a session-only connection.
+3. Check **"Remember in this browser"** to persist credentials to localStorage. Uncheck for a session-only connection.
 4. Click **Add Server** — the connection is tested before saving. If it fails you'll see the error inline.
-5. Your server now appears in the sidebar switcher at the bottom-left. Switch between servers at any time.
-6. Navigate to **Roles** or **Databases** to explore the selected server.
+5. Your server now appears in the sidebar switcher. Switch between servers at any time.
+6. Navigate to **Users**, **Roles**, **Databases**, or **Permissions** to explore the selected server.
 
 ---
 
-## Configuration
-
-### Environment variables
-
-Copy `.env.local` and fill in your values:
-
-```bash
-cp .env.local .env.local
-```
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `NEXTAUTH_SECRET` | Secret for NextAuth session signing — **required in production** | `change_me` |
-| `NEXTAUTH_URL` | Full URL of your deployment | `http://localhost:3000` |
-
-Generate a strong secret:
-
-```bash
-openssl rand -base64 32
-```
-
-### Production deployment
-
-**Docker** (recommended for self-hosting):
-
-```bash
-docker build -t pg_guardian .
-docker run -p 3000:3000 -e NEXTAUTH_SECRET=<secret> pg_guardian
-```
-
-**Vercel / any Node.js host:**
+## Production deployment
 
 ```bash
 npm run build
 npm start
 ```
 
-> No database is required by pg_guardian itself — it connects to *your* Postgres instances on demand.
+Or with Docker:
+
+```bash
+docker build -t afzaalahmadzeeshan/pg_gaurdian .
+docker run -p 3000:3000 afzaalahmadzeeshan/pg_gaurdian
+```
+
+> No database is required by pg_guardian itself — it connects to *your* Postgres instances on demand. No environment variables are required.
 
 ---
 
@@ -125,17 +103,20 @@ Your PostgreSQL Server(s)
 | Route | Description |
 | --- | --- |
 | `/` | Server management — add, test, remove connections |
-| `/roles` | Role viewer — attributes, memberships |
-| `/databases` | Database list for the selected server |
-| `/permissions` | Table privilege matrix *(coming soon)* |
+| `/users` | Login role viewer — attributes, database privileges, current user info |
+| `/roles` | Role viewer — all roles with attributes and memberships |
+| `/databases` | Database list with owner info for the selected server |
+| `/permissions` | Full privilege matrix per role across all object types |
 
 ---
 
 ## Running tests
 
 ```bash
-npm test            # single run
-npm run test:watch  # watch mode
+npm test              # single run
+npm run test:watch    # watch mode
+npm run test:ui       # browser UI
+npm run test:report   # verbose output
 ```
 
 Tests use **Vitest** + **Testing Library** and run entirely in-memory (no Postgres connection needed).
@@ -147,15 +128,19 @@ Tests use **Vitest** + **Testing Library** and run entirely in-memory (no Postgr
 ```text
 src/
 ├── app/
-│   ├── api/pg/          # Server-side API routes (test, roles, databases)
+│   ├── api/pg/          # Server-side API routes (test, roles, users, databases, permissions)
 │   ├── databases/       # /databases page
 │   ├── roles/           # /roles page
+│   ├── users/           # /users page
 │   ├── permissions/     # /permissions page
 │   └── layout.tsx       # Root layout (theme, sidebar)
 ├── components/
-│   ├── ui/              # shadcn/ui primitives
+│   ├── ui/              # Base UI / shadcn primitives
 │   ├── servers/         # ServersPage, AddServerDialog
 │   ├── roles/           # RolesPage
+│   ├── users/           # UsersPage
+│   ├── permissions/     # PermissionsMatrix
+│   ├── SqlQueryButton.tsx
 │   ├── ServerSwitcher.tsx
 │   ├── ServerSelect.tsx
 │   ├── Sidebar.tsx
@@ -199,7 +184,6 @@ Contributions are welcome. Here's how to get set up:
 - Keep PRs focused — one feature or fix per PR.
 - Add or update tests for any logic you change in `src/lib/` or `src/hooks/`.
 - Do not commit `.env.local` or any file containing credentials.
-- The `data/` directory is gitignored — do not commit it.
 - Follow the existing code style (TypeScript strict, no `any`, Tailwind for all styling).
 
 ### Reporting bugs

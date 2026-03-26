@@ -5,6 +5,55 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { PgRole, PgCurrentUser } from '@/types'
 import { useServerContext } from '@/context/ServerContext'
 import { ServerSelect } from '@/components/ServerSelect'
+import { SqlQueryButton } from '@/components/SqlQueryButton'
+
+const SQL_CURRENT_USER = [
+  {
+    label: 'Identity',
+    sql: `SELECT current_user AS username, session_user`,
+  },
+  {
+    label: 'Attributes',
+    sql: `SELECT
+  r.rolsuper, r.rolinherit, r.rolcreaterole, r.rolcreatedb,
+  r.rolcanlogin, r.rolreplication, r.rolbypassrls,
+  r.rolconnlimit, r.rolvaliduntil::text,
+  ARRAY(
+    SELECT b.rolname
+    FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles b ON m.roleid = b.oid
+    WHERE m.member = r.oid
+  ) AS memberof
+FROM pg_catalog.pg_roles r
+WHERE r.rolname = current_user`,
+  },
+  {
+    label: 'Database privileges',
+    sql: `SELECT
+  datname,
+  has_database_privilege(current_user, datname, 'CONNECT') AS can_connect,
+  has_database_privilege(current_user, datname, 'CREATE')  AS can_create,
+  has_database_privilege(current_user, datname, 'TEMP')    AS can_temp
+FROM pg_catalog.pg_database
+WHERE datistemplate = false
+ORDER BY datname`,
+  },
+]
+
+const SQL_ALL_USERS = `SELECT
+  r.oid, r.rolname, r.rolsuper, r.rolinherit,
+  r.rolcreaterole, r.rolcreatedb, r.rolcanlogin,
+  r.rolreplication, r.rolbypassrls, r.rolconnlimit,
+  r.rolvaliduntil::text,
+  ARRAY(
+    SELECT b.rolname
+    FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles b ON m.roleid = b.oid
+    WHERE m.member = r.oid
+  ) AS memberof
+FROM pg_catalog.pg_roles r
+WHERE r.rolcanlogin = true
+ORDER BY r.rolname`
 
 export function UsersPage() {
   const { servers, selectedId, selected } = useServerContext()
@@ -41,15 +90,18 @@ export function UsersPage() {
 
       {currentUser && (
         <section className="space-y-3">
-          <h2 className="text-lg font-medium">
-            Connected as{' '}
-            <span className="font-mono text-primary">{currentUser.username}</span>
-            {currentUser.username !== currentUser.sessionUser && (
-              <span className="text-muted-foreground text-sm font-normal ml-2">
-                (session: {currentUser.sessionUser})
-              </span>
-            )}
-          </h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-medium">
+              Connected as{' '}
+              <span className="font-mono text-primary">{currentUser.username}</span>
+              {currentUser.username !== currentUser.sessionUser && (
+                <span className="text-muted-foreground text-sm font-normal ml-2">
+                  (session: {currentUser.sessionUser})
+                </span>
+              )}
+            </h2>
+            <SqlQueryButton queries={SQL_CURRENT_USER} />
+          </div>
 
           <div className="flex flex-wrap gap-2">
             <AttrBadge label="Superuser" on={currentUser.rolsuper} />
@@ -99,7 +151,10 @@ export function UsersPage() {
 
       {users.length > 0 && (
         <section className="space-y-3">
-          <h2 className="text-lg font-medium">All Users</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-medium">All Users</h2>
+            <SqlQueryButton queries={{ sql: SQL_ALL_USERS }} />
+          </div>
           <Table>
             <TableHeader>
               <TableRow>

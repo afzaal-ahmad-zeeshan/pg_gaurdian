@@ -60,21 +60,27 @@ export interface PgDbPrivilege {
 // ─── Permissions matrix ────────────────────────────────────────────────────
 
 export interface DatabasePermission {
+  oid: number
   name: string
+  owner: string
   connect: boolean
   create: boolean
   temp: boolean
 }
 
 export interface SchemaPermission {
+  oid: number
   name: string
+  owner: string
   usage: boolean
   create: boolean
 }
 
 export interface TablePermission {
+  oid: number
   schema: string
   name: string
+  owner: string
   /** r=table v=view m=matview f=foreign p=partitioned */
   kind: string
   select: boolean
@@ -87,16 +93,20 @@ export interface TablePermission {
 }
 
 export interface SequencePermission {
+  oid: number
   schema: string
   name: string
+  owner: string
   usage: boolean
   select: boolean
   update: boolean
 }
 
 export interface FunctionPermission {
+  oid: number
   schema: string
   name: string
+  owner: string
   args: string
   /** f=function p=procedure a=aggregate w=window */
   kind: string
@@ -104,20 +114,26 @@ export interface FunctionPermission {
 }
 
 export interface TypePermission {
+  oid: number
   schema: string
   name: string
+  owner: string
   /** d=domain e=enum r=range m=multirange b=base */
   kind: string
   usage: boolean
 }
 
 export interface FdwPermission {
+  oid: number
   name: string
+  owner: string
   usage: boolean
 }
 
 export interface ForeignServerPermission {
+  oid: number
   name: string
+  owner: string
   usage: boolean
 }
 
