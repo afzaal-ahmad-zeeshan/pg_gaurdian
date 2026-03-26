@@ -67,7 +67,14 @@ npm run build
 npm start
 ```
 
-Or with Docker:
+Or pull the pre-built image from Docker Hub:
+
+```bash
+docker pull afzaalahmadzeeshan/pg_gaurdian
+docker run -p 3000:3000 afzaalahmadzeeshan/pg_gaurdian
+```
+
+Or build it yourself:
 
 ```bash
 docker build -t afzaalahmadzeeshan/pg_gaurdian .
