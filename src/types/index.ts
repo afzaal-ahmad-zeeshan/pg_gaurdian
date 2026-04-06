@@ -63,6 +63,7 @@ export interface DatabasePermission {
   oid: number
   name: string
   owner: string
+  owner_oid: number
   connect: boolean
   create: boolean
   temp: boolean
@@ -72,6 +73,7 @@ export interface SchemaPermission {
   oid: number
   name: string
   owner: string
+  owner_oid: number
   usage: boolean
   create: boolean
 }
@@ -81,6 +83,7 @@ export interface TablePermission {
   schema: string
   name: string
   owner: string
+  owner_oid: number
   /** r=table v=view m=matview f=foreign p=partitioned */
   kind: string
   select: boolean
@@ -97,6 +100,7 @@ export interface SequencePermission {
   schema: string
   name: string
   owner: string
+  owner_oid: number
   usage: boolean
   select: boolean
   update: boolean
@@ -107,6 +111,7 @@ export interface FunctionPermission {
   schema: string
   name: string
   owner: string
+  owner_oid: number
   args: string
   /** f=function p=procedure a=aggregate w=window */
   kind: string
@@ -118,6 +123,7 @@ export interface TypePermission {
   schema: string
   name: string
   owner: string
+  owner_oid: number
   /** d=domain e=enum r=range m=multirange b=base */
   kind: string
   usage: boolean
@@ -127,6 +133,7 @@ export interface FdwPermission {
   oid: number
   name: string
   owner: string
+  owner_oid: number
   usage: boolean
 }
 
@@ -134,7 +141,76 @@ export interface ForeignServerPermission {
   oid: number
   name: string
   owner: string
+  owner_oid: number
   usage: boolean
+}
+
+// ─── Extended permissions ──────────────────────────────────────────────────
+
+/** Explicit column-level grant on a specific column */
+export interface ColumnPrivilege {
+  schema: string
+  table: string
+  column: string
+  select: boolean
+  insert: boolean
+  update: boolean
+  references: boolean
+}
+
+/**
+ * One row per RLS policy applicable to this role (or null fields when a
+ * table has RLS enabled but no policy targets this role — meaning all rows
+ * are blocked by default for non-superusers).
+ */
+export interface RlsPolicyRow {
+  schema: string
+  table: string
+  rlsEnabled: boolean
+  rlsForced: boolean
+  policyName: string | null
+  command: string | null   // ALL | SELECT | INSERT | UPDATE | DELETE
+  permissive: boolean | null
+  roles: string[] | null   // ['PUBLIC'] or explicit role names
+  usingExpr: string | null
+  checkExpr: string | null
+}
+
+/** Default privilege: what this role will automatically receive on future objects */
+export interface DefaultPrivilege {
+  grantor: string
+  schema: string | null    // null = all schemas
+  objectType: string       // TABLE | SEQUENCE | FUNCTION | TYPE | SCHEMA
+  privileges: string[]
+}
+
+/** Role-level GUC / configuration parameter set via ALTER ROLE ... SET */
+export interface ConfigSetting {
+  name: string
+  value: string
+  database: string | null  // null = applies to all databases
+}
+
+/** Tablespace access */
+export interface TablespacePrivilege {
+  name: string
+  owner: string
+  owner_oid: number
+  create: boolean
+}
+
+/** Summary of objects owned by this role (ownership = full DDL control) */
+export interface OwnedObjectGroup {
+  type: string             // TABLE | VIEW | SEQUENCE | SCHEMA | FUNCTION | TYPE | DATABASE
+  count: number
+  examples: string[]       // first 5 fully-qualified names
+}
+
+/** Another role that has been granted membership in THIS role */
+export interface RoleGrantee {
+  grantee: string
+  grantedBy: string
+  adminOption: boolean
 }
 
 export interface PermissionsMatrix {
@@ -147,6 +223,14 @@ export interface PermissionsMatrix {
   types: TypePermission[]
   fdws: FdwPermission[]
   foreignServers: ForeignServerPermission[]
+  // Extended
+  columnPrivileges: ColumnPrivilege[]
+  rlsPolicies: RlsPolicyRow[]
+  defaultPrivileges: DefaultPrivilege[]
+  configSettings: ConfigSetting[]
+  tablespaces: TablespacePrivilege[]
+  ownedObjects: OwnedObjectGroup[]
+  grantees: RoleGrantee[]
 }
 
 export interface PgCurrentUser {

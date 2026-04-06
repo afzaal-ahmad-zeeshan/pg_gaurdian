@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Database, Users, Shield, Server, UserCog } from 'lucide-react'
+import { Database, Users, Shield, Server, UserCog, FlaskConical, UserPlus, KeyRound, Crown, SquarePen } from 'lucide-react'
 import { ThemeToggle } from './ThemeToggle'
 import { ServerSwitcher } from './ServerSwitcher'
 
@@ -12,6 +12,11 @@ const nav = [
   { href: '/roles', label: 'Roles', icon: Users },
   { href: '/databases', label: 'Databases', icon: Database },
   { href: '/permissions', label: 'Permissions', icon: Shield },
+  { href: '/permissions-editor', label: 'Edit Permissions', icon: SquarePen },
+  { href: '/provision', label: 'Provision User', icon: UserPlus },
+  { href: '/grant', label: 'Grant / Revoke', icon: KeyRound },
+  { href: '/chown', label: 'Alter Owner', icon: Crown },
+  { href: '/testground', label: 'Test Ground', icon: FlaskConical },
 ]
 
 export function Sidebar() {

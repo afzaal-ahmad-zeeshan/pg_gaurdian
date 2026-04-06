@@ -1,9 +1,11 @@
 'use client'
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Database, FolderOpen, Table2, Hash, Code2, Tag, Globe, Plug,
-  UserCog, LucideIcon,
+  UserCog, LucideIcon, ShieldCheck, ShieldAlert, ShieldX, KeyRound,
+  Columns, Lock, Star, Settings, Package, Users, Server,
+  ChevronDown, ChevronRight,
 } from 'lucide-react'
 import { SqlQueryButton } from '@/components/SqlQueryButton'
 import { Badge } from '@/components/ui/badge'
@@ -16,10 +18,12 @@ import {
 import { ServerSelect } from '@/components/ServerSelect'
 import { useServerContext } from '@/context/ServerContext'
 import type {
-  PgRole, PermissionsMatrix,
+  PgRole, PgDatabase, PermissionsMatrix, PgCurrentUser,
   DatabasePermission, SchemaPermission, TablePermission,
   SequencePermission, FunctionPermission, TypePermission,
   FdwPermission, ForeignServerPermission,
+  ColumnPrivilege, RlsPolicyRow, DefaultPrivilege,
+  ConfigSetting, TablespacePrivilege, OwnedObjectGroup, RoleGrantee,
 } from '@/types'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -206,6 +210,263 @@ LEFT JOIN LATERAL aclexplode(
 GROUP BY s.oid, s.srvname, s.srvowner
 ORDER BY s.srvname`
 
+const SQL_COLUMN_PRIVS = `-- Column-level grants explicitly set for this role
+WITH effective_roles AS (
+  SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = $1
+  UNION ALL SELECT 0::oid
+  UNION ALL SELECT m.roleid FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles r ON r.oid = m.member AND r.rolname = $1
+)
+SELECT n.nspname AS schema, c.relname AS table, a.attname AS column,
+  bool_or(acl.privilege_type='SELECT')     AS select,
+  bool_or(acl.privilege_type='INSERT')     AS insert,
+  bool_or(acl.privilege_type='UPDATE')     AS update,
+  bool_or(acl.privilege_type='REFERENCES') AS references
+FROM pg_catalog.pg_attribute a
+JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+CROSS JOIN LATERAL aclexplode(a.attacl) acl
+WHERE a.attacl IS NOT NULL AND a.attnum > 0 AND NOT a.attisdropped
+  AND acl.grantee IN (SELECT oid FROM effective_roles)
+  AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+GROUP BY n.nspname, c.relname, a.attname, a.attnum
+ORDER BY schema, "table", column`
+
+const SQL_RLS = `-- RLS-enabled tables and applicable policies for this role
+WITH effective_roles AS (
+  SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = $1
+  UNION ALL SELECT 0::oid
+  UNION ALL SELECT m.roleid FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles r ON r.oid = m.member AND r.rolname = $1
+)
+SELECT n.nspname AS schema, c.relname AS table,
+  c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS rls_forced,
+  p.polname AS policy, p.polpermissive AS permissive,
+  CASE p.polcmd WHEN 'r' THEN 'SELECT' WHEN 'a' THEN 'INSERT'
+    WHEN 'w' THEN 'UPDATE' WHEN 'd' THEN 'DELETE' ELSE 'ALL' END AS command,
+  pg_get_expr(p.polqual, p.polrelid) AS using_expr,
+  pg_get_expr(p.polwithcheck, p.polrelid) AS check_expr
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_catalog.pg_policy p ON p.polrelid = c.oid
+  AND EXISTS (SELECT 1 FROM effective_roles er WHERE er.oid = ANY(p.polroles))
+WHERE c.relrowsecurity = true
+  AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+ORDER BY schema, "table", policy NULLS LAST`
+
+const SQL_DEFAULT_PRIVS = `-- Default privileges: what this role receives on future objects
+WITH effective_roles AS (
+  SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = $1
+  UNION ALL SELECT 0::oid
+  UNION ALL SELECT m.roleid FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles r ON r.oid = m.member AND r.rolname = $1
+)
+SELECT pg_get_userbyid(d.defaclrole) AS grantor, n.nspname AS schema,
+  CASE d.defaclobjtype WHEN 'r' THEN 'TABLE' WHEN 'S' THEN 'SEQUENCE'
+    WHEN 'f' THEN 'FUNCTION' WHEN 'T' THEN 'TYPE' WHEN 'n' THEN 'SCHEMA'
+  END AS object_type,
+  array_agg(DISTINCT acl.privilege_type) AS privileges
+FROM pg_catalog.pg_default_acl d
+LEFT JOIN pg_catalog.pg_namespace n ON n.oid = d.defaclnamespace
+CROSS JOIN LATERAL aclexplode(d.defaclacl) acl
+WHERE acl.grantee IN (SELECT oid FROM effective_roles)
+GROUP BY d.defaclrole, n.nspname, d.defaclobjtype
+ORDER BY grantor, object_type`
+
+const SQL_CONFIG = `-- Session configuration set for this role via ALTER ROLE ... SET
+SELECT split_part(cfg,'=',1) AS name,
+  substring(cfg FROM position('='IN cfg)+1) AS value,
+  CASE s.setdatabase WHEN 0 THEN '(all databases)'
+    ELSE (SELECT datname FROM pg_catalog.pg_database WHERE oid=s.setdatabase)
+  END AS database
+FROM pg_catalog.pg_db_role_setting s
+CROSS JOIN LATERAL unnest(s.setconfig) AS cfg
+WHERE s.setrole = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = $1)
+ORDER BY database, name`
+
+const SQL_TABLESPACES = `-- Tablespace access for this role
+WITH effective_roles AS (
+  SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = $1
+  UNION ALL SELECT 0::oid
+  UNION ALL SELECT m.roleid FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles r ON r.oid = m.member AND r.rolname = $1
+)
+SELECT t.spcname AS tablespace,
+  (SELECT rolname FROM pg_roles WHERE oid = t.spcowner) AS owner,
+  coalesce(bool_or(a.privilege_type='CREATE'), false) AS create
+FROM pg_catalog.pg_tablespace t
+LEFT JOIN LATERAL aclexplode(coalesce(t.spcacl, acldefault('t',t.spcowner))) a
+  ON a.grantee IN (SELECT oid FROM effective_roles)
+GROUP BY t.spcname, t.spcowner ORDER BY tablespace`
+
+const SQL_OWNED = `-- Objects owned by this role (full DDL control)
+WITH role_oid AS (SELECT oid FROM pg_roles WHERE rolname = $1)
+SELECT 'TABLE'    AS type, n.nspname||'.'||c.relname AS name FROM pg_class c
+  JOIN pg_namespace n ON n.oid=c.relnamespace, role_oid
+  WHERE c.relkind='r' AND c.relowner=role_oid.oid AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+UNION ALL
+SELECT 'VIEW',  n.nspname||'.'||c.relname FROM pg_class c
+  JOIN pg_namespace n ON n.oid=c.relnamespace, role_oid
+  WHERE c.relkind IN ('v','m') AND c.relowner=role_oid.oid AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+UNION ALL SELECT 'SCHEMA', nspname FROM pg_namespace, role_oid WHERE nspowner=role_oid.oid
+UNION ALL SELECT 'DATABASE', datname FROM pg_database, role_oid WHERE datdba=role_oid.oid AND NOT datistemplate
+ORDER BY type, name`
+
+const SQL_GRANTEES = `-- Roles that have been granted membership in this role
+SELECT pg_get_userbyid(m.member)  AS grantee,
+       pg_get_userbyid(m.grantor) AS granted_by,
+       m.admin_option
+FROM pg_auth_members m
+JOIN pg_roles r ON r.oid = m.roleid
+WHERE r.rolname = $1
+ORDER BY grantee`
+
+// ─── Management rights banner ─────────────────────────────────────────────────
+
+interface ManagementRights {
+  username: string
+  isSuperuser: boolean
+  canManageRoles: boolean
+  ownsObjects: boolean
+  hasGrantOptions: boolean
+}
+
+function SqlSnippet({ sql }: { sql: string }) {
+  return (
+    <pre className="mt-1.5 rounded bg-black/5 dark:bg-white/5 px-2 py-1.5 text-[11px] font-mono leading-relaxed whitespace-pre-wrap break-all">
+      {sql}
+    </pre>
+  )
+}
+
+function CapabilityCard({
+  icon: Icon,
+  label,
+  condition,
+  allowed,
+  grantedExplain,
+  deniedExplain,
+  fixSql,
+}: {
+  icon: LucideIcon
+  label: string
+  condition: string
+  allowed: boolean
+  grantedExplain: string
+  deniedExplain: string
+  fixSql?: string
+}) {
+  return (
+    <div
+      className={`rounded-md border p-3 text-xs space-y-1.5 ${
+        allowed
+          ? 'border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/30'
+          : 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/30'
+      }`}
+    >
+      <div className="flex items-center gap-1.5">
+        <Icon
+          size={13}
+          className={`shrink-0 ${allowed ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'}`}
+        />
+        <span className={`font-semibold ${allowed ? 'text-green-800 dark:text-green-300' : 'text-red-800 dark:text-red-300'}`}>
+          {label}
+        </span>
+        <span className="ml-auto font-mono text-[10px] text-muted-foreground shrink-0">{condition}</span>
+      </div>
+
+      <p className={`leading-relaxed ${allowed ? 'text-green-800 dark:text-green-300' : 'text-red-800 dark:text-red-300'}`}>
+        {allowed ? grantedExplain : deniedExplain}
+      </p>
+
+      {!allowed && fixSql && <SqlSnippet sql={fixSql} />}
+    </div>
+  )
+}
+
+function ManagementRightsBanner({ rights }: { rights: ManagementRights }) {
+  const overallAllowed = rights.canManageRoles || rights.ownsObjects || rights.hasGrantOptions
+  const u = rights.username
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/20 p-4 space-y-3">
+      {/* Summary row */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {rights.isSuperuser ? (
+          <ShieldCheck size={15} className="text-green-500 shrink-0" />
+        ) : overallAllowed ? (
+          <ShieldAlert size={15} className="text-amber-500 shrink-0" />
+        ) : (
+          <ShieldX size={15} className="text-red-500 shrink-0" />
+        )}
+        <span className="text-sm font-medium">
+          Connected as <span className="font-mono">{u}</span>
+        </span>
+        <span className="text-xs text-muted-foreground">
+          {rights.isSuperuser
+            ? '— superuser with full control over all roles and privileges'
+            : overallAllowed
+            ? '— limited management rights (see details below)'
+            : '— read-only access, cannot modify roles or grant privileges'}
+        </span>
+      </div>
+
+      {/* Capability cards */}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <CapabilityCard
+          icon={ShieldCheck}
+          label="Manage all roles"
+          condition="SUPERUSER"
+          allowed={rights.isSuperuser}
+          grantedExplain={`You can CREATE, ALTER, and DROP any role — including other superusers. You can also bypass row-level security and grant any privilege without restriction.`}
+          deniedExplain={`You cannot manage superuser roles or bypass access controls. Only another superuser can perform these operations.`}
+          fixSql={`-- Run as an existing superuser:\nALTER ROLE "${u}" SUPERUSER;`}
+        />
+
+        <CapabilityCard
+          icon={UserCog}
+          label="Manage non-superuser roles"
+          condition="CREATEROLE"
+          allowed={rights.canManageRoles}
+          grantedExplain={
+            rights.isSuperuser
+              ? `Included via SUPERUSER. You can create, alter, and drop any non-superuser role and control role memberships.`
+              : `You can CREATE, ALTER, and DROP non-superuser roles, and grant or revoke role memberships. You cannot touch superuser roles.`
+          }
+          deniedExplain={`You cannot create or modify any roles. You have no ability to grant or revoke role memberships for other users.`}
+          fixSql={`-- Run as a superuser:\nALTER ROLE "${u}" CREATEROLE;`}
+        />
+
+        <CapabilityCard
+          icon={KeyRound}
+          label="Grant on owned objects"
+          condition="object owner"
+          allowed={rights.ownsObjects}
+          grantedExplain={`You own at least one table, view, sequence, or other object in this database. As the owner you can GRANT and REVOKE any privilege on those objects to any other role.`}
+          deniedExplain={`You do not own any objects in this database, so there is nothing for you to grant access to. You need to own an object before you can control who can use it.`}
+          fixSql={`-- Create an object you own, or have an owner transfer one:\nCREATE TABLE my_schema.my_table ( ... );\n-- or (run by current owner / superuser):\nALTER TABLE my_schema.my_table OWNER TO "${u}";`}
+        />
+
+        <CapabilityCard
+          icon={ShieldAlert}
+          label="Re-grant held privileges"
+          condition="WITH GRANT OPTION"
+          allowed={rights.hasGrantOptions}
+          grantedExplain={`At least one of your privileges was granted WITH GRANT OPTION. You can pass that specific privilege on to other roles, but only for the objects where you hold it with this option.`}
+          deniedExplain={`None of your current privileges include GRANT OPTION, so you cannot pass any privilege on to other roles — even for things you can do yourself.`}
+          fixSql={`-- Run by the object owner or a superuser:\nGRANT SELECT ON my_schema.my_table\n  TO "${u}" WITH GRANT OPTION;`}
+        />
+      </div>
+
+      {!overallAllowed && (
+        <p className="text-xs text-muted-foreground border-t border-border pt-3">
+          To grant any management rights to <span className="font-mono">{u}</span>, a superuser must first run one of the <code className="font-mono">ALTER ROLE</code> commands shown above, or transfer object ownership.
+        </p>
+      )}
+    </div>
+  )
+}
+
 // ─── Section wrapper ──────────────────────────────────────────────────────────
 
 function Section({
@@ -245,9 +506,14 @@ function OidCell({ oid }: { oid: number }) {
   )
 }
 
-function OwnerCell({ owner }: { owner: string }) {
+function OwnerCell({ owner, ownerOid }: { owner: string; ownerOid?: number }) {
   return (
-    <TableCell className="font-mono text-xs text-muted-foreground">{owner}</TableCell>
+    <TableCell className="font-mono text-xs text-muted-foreground">
+      {owner}
+      {ownerOid !== undefined && (
+        <span className="ml-1 text-[10px] text-muted-foreground/50">·{ownerOid}</span>
+      )}
+    </TableCell>
   )
 }
 
@@ -269,7 +535,7 @@ function DatabasesTable({ rows }: { rows: DatabasePermission[] }) {
           <TableRow key={r.name}>
             <OidCell oid={r.oid} />
             <TableCell className="font-mono text-sm">{r.name}</TableCell>
-            <OwnerCell owner={r.owner} />
+            <OwnerCell owner={r.owner} ownerOid={r.owner_oid} />
             <TableCell className="text-center"><Perm on={r.connect} /></TableCell>
             <TableCell className="text-center"><Perm on={r.create} /></TableCell>
             <TableCell className="text-center"><Perm on={r.temp} /></TableCell>
@@ -297,7 +563,7 @@ function SchemasTable({ rows }: { rows: SchemaPermission[] }) {
           <TableRow key={r.name}>
             <OidCell oid={r.oid} />
             <TableCell className="font-mono text-sm">{r.name}</TableCell>
-            <OwnerCell owner={r.owner} />
+            <OwnerCell owner={r.owner} ownerOid={r.owner_oid} />
             <TableCell className="text-center"><Perm on={r.usage} /></TableCell>
             <TableCell className="text-center"><Perm on={r.create} /></TableCell>
           </TableRow>
@@ -334,7 +600,7 @@ function TablesTable({ rows }: { rows: TablePermission[] }) {
                 <KindBadge kind={r.kind} map={TABLE_KIND} />
               </span>
             </TableCell>
-            <OwnerCell owner={r.owner} />
+            <OwnerCell owner={r.owner} ownerOid={r.owner_oid} />
             <TableCell className="text-center px-1"><Perm on={r.select} /></TableCell>
             <TableCell className="text-center px-1"><Perm on={r.insert} /></TableCell>
             <TableCell className="text-center px-1"><Perm on={r.update} /></TableCell>
@@ -367,7 +633,7 @@ function SequencesTable({ rows }: { rows: SequencePermission[] }) {
           <TableRow key={`${r.schema}.${r.name}`}>
             <OidCell oid={r.oid} />
             <TableCell className="font-mono text-sm">{r.schema}.{r.name}</TableCell>
-            <OwnerCell owner={r.owner} />
+            <OwnerCell owner={r.owner} ownerOid={r.owner_oid} />
             <TableCell className="text-center"><Perm on={r.usage} /></TableCell>
             <TableCell className="text-center"><Perm on={r.select} /></TableCell>
             <TableCell className="text-center"><Perm on={r.update} /></TableCell>
@@ -402,7 +668,7 @@ function FunctionsTable({ rows }: { rows: FunctionPermission[] }) {
                 <KindBadge kind={r.kind} map={FUNC_KIND} />
               </span>
             </TableCell>
-            <OwnerCell owner={r.owner} />
+            <OwnerCell owner={r.owner} ownerOid={r.owner_oid} />
             <TableCell className="text-center"><Perm on={r.execute} /></TableCell>
           </TableRow>
         ))}
@@ -432,7 +698,7 @@ function TypesTable({ rows }: { rows: TypePermission[] }) {
                 <KindBadge kind={r.kind} map={TYPE_KIND} />
               </span>
             </TableCell>
-            <OwnerCell owner={r.owner} />
+            <OwnerCell owner={r.owner} ownerOid={r.owner_oid} />
             <TableCell className="text-center"><Perm on={r.usage} /></TableCell>
           </TableRow>
         ))}
@@ -457,12 +723,379 @@ function SimpleUsageTable({ rows, nameLabel }: { rows: (FdwPermission | ForeignS
           <TableRow key={r.name}>
             <OidCell oid={r.oid} />
             <TableCell className="font-mono text-sm">{r.name}</TableCell>
-            <OwnerCell owner={r.owner} />
+            <OwnerCell owner={r.owner} ownerOid={r.owner_oid} />
             <TableCell className="text-center"><Perm on={r.usage} /></TableCell>
           </TableRow>
         ))}
       </TableBody>
     </Table>
+  )
+}
+
+function ColumnPrivilegesTable({ rows }: { rows: ColumnPrivilege[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="min-w-48">Column</TableHead>
+          <TableHead className="text-center w-20">SELECT</TableHead>
+          <TableHead className="text-center w-20">INSERT</TableHead>
+          <TableHead className="text-center w-20">UPDATE</TableHead>
+          <TableHead className="text-center w-24">REF.</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((r, i) => (
+          <TableRow key={i}>
+            <TableCell className="font-mono text-sm">
+              <span className="text-muted-foreground">{r.schema}.{r.table}.</span>
+              <span className="font-semibold">{r.column}</span>
+            </TableCell>
+            <TableCell className="text-center"><Perm on={r.select} /></TableCell>
+            <TableCell className="text-center"><Perm on={r.insert} /></TableCell>
+            <TableCell className="text-center"><Perm on={r.update} /></TableCell>
+            <TableCell className="text-center"><Perm on={r.references} /></TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  )
+}
+
+function RlsTable({ rows }: { rows: RlsPolicyRow[] }) {
+  // Group by schema.table so we can show a sub-header per table
+  const byTable = new Map<string, RlsPolicyRow[]>()
+  for (const r of rows) {
+    const key = `${r.schema}.${r.table}`
+    if (!byTable.has(key)) byTable.set(key, [])
+    byTable.get(key)!.push(r)
+  }
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="min-w-52">Table / Policy</TableHead>
+          <TableHead className="w-24">Command</TableHead>
+          <TableHead className="w-24">Type</TableHead>
+          <TableHead>Applies to</TableHead>
+          <TableHead className="min-w-40">USING (filter)</TableHead>
+          <TableHead className="min-w-40">WITH CHECK</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {Array.from(byTable.entries()).map(([tableKey, tableRows]) => {
+          const first = tableRows[0]
+          return (
+            <React.Fragment key={tableKey}>
+              {/* Table header row */}
+              <TableRow className="bg-muted/30">
+                <TableCell colSpan={6} className="py-1.5 font-mono text-sm font-medium">
+                  <span className="flex items-center gap-2 flex-wrap">
+                    {tableKey}
+                    {first.rlsForced && (
+                      <Badge variant="outline" className="text-[10px] px-1 h-4 text-amber-600 border-amber-300">
+                        FORCE ROW SECURITY
+                      </Badge>
+                    )}
+                  </span>
+                </TableCell>
+              </TableRow>
+              {/* Policy rows */}
+              {tableRows.map((r, i) =>
+                r.policyName ? (
+                  <TableRow key={i}>
+                    <TableCell className="font-mono text-xs pl-8 text-muted-foreground">{r.policyName}</TableCell>
+                    <TableCell className="text-xs font-mono">{r.command}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className={`text-[10px] px-1 h-4 ${r.permissive ? 'text-green-600 border-green-300' : 'text-red-600 border-red-300'}`}>
+                        {r.permissive ? 'PERMISSIVE' : 'RESTRICTIVE'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-xs font-mono text-muted-foreground">
+                      {(r.roles ?? []).join(', ')}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground max-w-48 truncate" title={r.usingExpr ?? ''}>
+                      {r.usingExpr ?? <span className="opacity-40">—</span>}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground max-w-48 truncate" title={r.checkExpr ?? ''}>
+                      {r.checkExpr ?? <span className="opacity-40">—</span>}
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  <TableRow key={i} className="text-muted-foreground/60">
+                    <TableCell colSpan={6} className="pl-8 text-xs italic">
+                      No policies targeting this role — all rows blocked by default for non-superusers
+                    </TableCell>
+                  </TableRow>
+                )
+              )}
+            </React.Fragment>
+          )
+        })}
+      </TableBody>
+    </Table>
+  )
+}
+
+function DefaultPrivilegesTable({ rows }: { rows: DefaultPrivilege[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Grantor</TableHead>
+          <TableHead>Schema</TableHead>
+          <TableHead>Object type</TableHead>
+          <TableHead>Privileges auto-granted on new objects</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((r, i) => (
+          <TableRow key={i}>
+            <TableCell className="font-mono text-sm">{r.grantor}</TableCell>
+            <TableCell className="font-mono text-sm text-muted-foreground">{r.schema ?? '(all)'}</TableCell>
+            <TableCell>
+              <Badge variant="secondary" className="text-xs font-mono">{r.objectType}</Badge>
+            </TableCell>
+            <TableCell>
+              <div className="flex flex-wrap gap-1">
+                {r.privileges.map(p => (
+                  <Badge key={p} variant="outline" className="text-xs font-mono">{p}</Badge>
+                ))}
+              </div>
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  )
+}
+
+const SECURITY_SENSITIVE_SETTINGS = new Set([
+  'search_path', 'role', 'session_authorization',
+  'local_preload_libraries', 'session_preload_libraries',
+])
+
+function ConfigTable({ rows }: { rows: ConfigSetting[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="min-w-48">Parameter</TableHead>
+          <TableHead className="min-w-64">Value</TableHead>
+          <TableHead>Database scope</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((r, i) => (
+          <TableRow key={i}>
+            <TableCell className="font-mono text-sm flex items-center gap-1.5">
+              {r.name}
+              {SECURITY_SENSITIVE_SETTINGS.has(r.name) && (
+                <Badge variant="outline" className="text-[10px] px-1 h-4 text-amber-600 border-amber-300">
+                  security-sensitive
+                </Badge>
+              )}
+            </TableCell>
+            <TableCell className="font-mono text-sm text-muted-foreground">{r.value}</TableCell>
+            <TableCell className="text-sm text-muted-foreground">{r.database ?? '(all databases)'}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  )
+}
+
+function TablespacesTable({ rows }: { rows: TablespacePrivilege[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="min-w-40">Tablespace</TableHead>
+          <TableHead>Owner</TableHead>
+          <TableHead className="text-center w-24">CREATE</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map(r => (
+          <TableRow key={r.name}>
+            <TableCell className="font-mono text-sm">{r.name}</TableCell>
+            <OwnerCell owner={r.owner} ownerOid={r.owner_oid} />
+            <TableCell className="text-center"><Perm on={r.create} /></TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  )
+}
+
+const OWNED_ICON: Record<string, string> = {
+  TABLE: '🗃', VIEW: '👁', SEQUENCE: '#', SCHEMA: '📁',
+  FUNCTION: 'ƒ', TYPE: 'T', DATABASE: '🗄',
+}
+
+function OwnedObjectsTable({ rows }: { rows: OwnedObjectGroup[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="w-28">Type</TableHead>
+          <TableHead className="w-20 text-right">Count</TableHead>
+          <TableHead>Examples (first 5)</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map(r => (
+          <TableRow key={r.type}>
+            <TableCell className="font-mono text-sm">
+              <span className="mr-1.5">{OWNED_ICON[r.type] ?? ''}</span>{r.type}
+            </TableCell>
+            <TableCell className="text-right font-mono text-sm text-muted-foreground">{r.count}</TableCell>
+            <TableCell>
+              <div className="flex flex-wrap gap-1">
+                {r.examples.map(e => (
+                  <Badge key={e} variant="secondary" className="text-xs font-mono">{e}</Badge>
+                ))}
+                {r.count > r.examples.length && (
+                  <span className="text-xs text-muted-foreground self-center">
+                    +{r.count - r.examples.length} more
+                  </span>
+                )}
+              </div>
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  )
+}
+
+function GranteesTable({ rows }: { rows: RoleGrantee[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="min-w-40">Grantee (member)</TableHead>
+          <TableHead>Granted by</TableHead>
+          <TableHead className="w-32 text-center">Admin option</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((r, i) => (
+          <TableRow key={i}>
+            <TableCell className="font-mono text-sm">{r.grantee}</TableCell>
+            <TableCell className="font-mono text-xs text-muted-foreground">{r.grantedBy}</TableCell>
+            <TableCell className="text-center">
+              <Perm on={r.adminOption} />
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  )
+}
+
+// ─── Schema tree components ───────────────────────────────────────────────────
+
+function SubSection({
+  icon: Icon, title, count, children,
+}: {
+  icon: LucideIcon; title: string; count: number; children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(true)
+  if (count === 0) return null
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 w-full text-left py-1.5 group"
+      >
+        {open
+          ? <ChevronDown size={12} className="text-muted-foreground shrink-0" />
+          : <ChevronRight size={12} className="text-muted-foreground shrink-0" />}
+        <Icon size={12} className="text-muted-foreground shrink-0" />
+        <span className="text-xs font-medium text-muted-foreground">{title}</span>
+        <Badge variant="secondary" className="text-[10px] h-3.5 px-1">{count}</Badge>
+      </button>
+      {open && (
+        <div className="ml-4 rounded-md border border-border overflow-x-auto">
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SchemaBlock({
+  schema, tables, sequences, functions, types,
+}: {
+  schema: SchemaPermission
+  tables: TablePermission[]
+  sequences: SequencePermission[]
+  functions: FunctionPermission[]
+  types: TypePermission[]
+}) {
+  const [open, setOpen] = useState(true)
+  const total = tables.length + sequences.length + functions.length + types.length
+
+  return (
+    <div className="rounded-lg border border-border overflow-hidden">
+      {/* Schema header */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2.5 w-full text-left px-4 py-3 bg-muted/30 hover:bg-muted/50 transition-colors"
+      >
+        {open
+          ? <ChevronDown size={14} className="text-muted-foreground shrink-0" />
+          : <ChevronRight size={14} className="text-muted-foreground shrink-0" />}
+        <FolderOpen size={14} className="text-muted-foreground shrink-0" />
+        <span className="font-mono text-sm font-medium">{schema.name}</span>
+        <span className="text-xs text-muted-foreground">
+          owner: {schema.owner}
+          <span className="ml-1 text-[10px] text-muted-foreground/50">·{schema.owner_oid}</span>
+        </span>
+        <div className="flex items-center gap-1 ml-1">
+          <Badge
+            variant="outline"
+            className={`text-[10px] px-1.5 h-4 font-mono ${schema.usage ? 'text-green-600 border-green-300 dark:text-green-400' : 'text-muted-foreground/50'}`}
+          >
+            USAGE {schema.usage ? '✓' : '—'}
+          </Badge>
+          <Badge
+            variant="outline"
+            className={`text-[10px] px-1.5 h-4 font-mono ${schema.create ? 'text-green-600 border-green-300 dark:text-green-400' : 'text-muted-foreground/50'}`}
+          >
+            CREATE {schema.create ? '✓' : '—'}
+          </Badge>
+        </div>
+        <span className="ml-auto text-xs text-muted-foreground shrink-0">
+          {total} object{total !== 1 ? 's' : ''}
+        </span>
+      </button>
+
+      {/* Schema contents */}
+      {open && (
+        <div className="px-4 py-3 space-y-2 border-t border-border">
+          <SubSection icon={Table2} title="Tables, Views & Materialized Views" count={tables.length}>
+            <TablesTable rows={tables} />
+          </SubSection>
+          <SubSection icon={Hash} title="Sequences" count={sequences.length}>
+            <SequencesTable rows={sequences} />
+          </SubSection>
+          <SubSection icon={Code2} title="Routines" count={functions.length}>
+            <FunctionsTable rows={functions} />
+          </SubSection>
+          <SubSection icon={Tag} title="Types" count={types.length}>
+            <TypesTable rows={types} />
+          </SubSection>
+          {total === 0 && (
+            <p className="text-xs text-muted-foreground py-1">No objects in this schema.</p>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -493,20 +1126,25 @@ export function PermissionsMatrix() {
   const { servers, selectedId, selected } = useServerContext()
   // null = "let the component auto-pick"; string = explicit user choice
   const [userPickedRole, setUserPickedRoleState] = useState<string | null>(null)
+  const [selectedDb, setSelectedDb] = useState<string>('')
   const [lastServerId, setLastServerId] = useState('')
 
   // When selectedId stabilises on mount, or whenever the server changes,
-  // restore the persisted role for that server.
+  // restore the persisted role and reset the database to the configured one.
   if (selectedId !== lastServerId) {
     setLastServerId(selectedId)
     setUserPickedRoleState(loadPersistedRole(selectedId))
+    setSelectedDb(selected?.database ?? '')
   }
 
   // On first mount (selectedId may still be '' while ServerContext hydrates).
   // Once it settles to a real value the above block handles it, but we also
   // need to load from localStorage after the initial hydration effect runs.
   useEffect(() => {
-    if (selectedId) setUserPickedRoleState(loadPersistedRole(selectedId))
+    if (selectedId) {
+      setUserPickedRoleState(loadPersistedRole(selectedId))
+      setSelectedDb(selected?.database ?? '')
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -515,8 +1153,27 @@ export function PermissionsMatrix() {
     if (selectedId) persistRole(selectedId, role)
   }
 
-  // 1 ─ Fetch login roles to populate the user dropdown
-  const usersQuery = useQuery<{ users: PgRole[] }>({
+  // Derive a connection that points at the chosen database (same server creds).
+  const dbConnection = selected && selectedDb
+    ? { ...selected, database: selectedDb }
+    : selected ?? null
+
+  // 1 ─ Fetch all databases on this server (pg_database is cluster-level)
+  const dbsQuery = useQuery<PgDatabase[]>({
+    queryKey: ['databases', selectedId],
+    queryFn: () =>
+      fetch('/api/pg/databases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection: selected }),
+      }).then((r) => r.json()),
+    enabled: !!selected,
+  })
+
+  const databases = dbsQuery.data ?? []
+
+  // 2 ─ Fetch login roles (cluster-level — always use the original connection)
+  const usersQuery = useQuery<{ users: PgRole[]; currentUser: PgCurrentUser }>({
     queryKey: ['users', selectedId],
     queryFn: () =>
       fetch('/api/pg/users', {
@@ -531,19 +1188,31 @@ export function PermissionsMatrix() {
   // Derive the effective role: explicit pick → first available → nothing
   const selectedRole = userPickedRole ?? users[0]?.rolname ?? ''
 
-  // 2 ─ Fetch permissions matrix for the selected role
+  // 3 ─ Fetch permissions matrix for the selected role in the selected database
   const matrixQuery = useQuery<PermissionsMatrix>({
-    queryKey: ['permissions', selectedId, selectedRole],
+    queryKey: ['permissions', selectedId, selectedRole, selectedDb],
     queryFn: () =>
       fetch('/api/pg/permissions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ connection: selected, rolename: selectedRole }),
+        body: JSON.stringify({ connection: dbConnection, rolename: selectedRole }),
       }).then((r) => r.json()),
-    enabled: !!selected && !!selectedRole,
+    enabled: !!dbConnection && !!selectedRole,
   })
 
   const mx = matrixQuery.data
+
+  // 4 ─ Fetch management rights for the connected user (cluster-level)
+  const rightsQuery = useQuery<ManagementRights>({
+    queryKey: ['management-rights', selectedId],
+    queryFn: () =>
+      fetch('/api/pg/management-rights', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection: selected }),
+      }).then((r) => r.json()),
+    enabled: !!selected,
+  })
 
   return (
     <div className="space-y-6">
@@ -557,12 +1226,37 @@ export function PermissionsMatrix() {
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">
+          {/* Database selector */}
+          {databases.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <Database size={14} className="text-muted-foreground shrink-0" />
+              <span className="text-sm text-muted-foreground whitespace-nowrap">Database</span>
+              <Select value={selectedDb} onValueChange={(v) => v && setSelectedDb(v)}>
+                <SelectTrigger className="w-40">
+                  <SelectValue placeholder="Select database…">
+                    <span className="font-mono text-sm">{selectedDb || 'Select database…'}</span>
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {databases.map((db) => (
+                    <SelectItem key={db.datname} value={db.datname}>
+                      <span className="font-mono text-sm">{db.datname}</span>
+                      {db.datname === selected?.database && (
+                        <span className="text-muted-foreground ml-1.5 text-xs">connected</span>
+                      )}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           {/* Role selector */}
           {users.length > 0 && (
             <div className="flex items-center gap-1.5">
               <UserCog size={14} className="text-muted-foreground shrink-0" />
               <span className="text-sm text-muted-foreground whitespace-nowrap">Role</span>
-              <Select value={selectedRole} onValueChange={setUserPickedRole}>
+              <Select value={selectedRole} onValueChange={(v) => v && setUserPickedRole(v)}>
                 <SelectTrigger className="w-48">
                   <SelectValue placeholder="Select role…">
                     {selectedRole || 'Select role…'}
@@ -582,6 +1276,9 @@ export function PermissionsMatrix() {
         </div>
       </div>
 
+      {/* Management rights banner */}
+      {rightsQuery.data && <ManagementRightsBanner rights={rightsQuery.data} />}
+
       {/* Guard: no servers */}
       {servers.length === 0 && (
         <p className="text-muted-foreground text-sm">No servers configured. Add one on the Servers page.</p>
@@ -599,7 +1296,10 @@ export function PermissionsMatrix() {
 
       {/* Loading matrix */}
       {matrixQuery.isLoading && (
-        <p className="text-muted-foreground text-sm">Loading permissions for <span className="font-mono">{selectedRole}</span>…</p>
+        <p className="text-muted-foreground text-sm">
+          Loading permissions for <span className="font-mono">{selectedRole}</span>
+          {selectedDb && <> on <span className="font-mono">{selectedDb}</span></>}…
+        </p>
       )}
 
       {/* Error */}
@@ -621,6 +1321,13 @@ export function PermissionsMatrix() {
               { label: 'Types', n: mx.types.length },
               { label: 'FDWs', n: mx.fdws.length },
               { label: 'Foreign Servers', n: mx.foreignServers.length },
+              { label: 'Column Grants', n: mx.columnPrivileges.length },
+              { label: 'RLS Tables', n: mx.rlsPolicies.length },
+              { label: 'Default Privs', n: mx.defaultPrivileges.length },
+              { label: 'Config Settings', n: mx.configSettings.length },
+              { label: 'Tablespaces', n: mx.tablespaces.length },
+              { label: 'Owned Objects', n: mx.ownedObjects.reduce((s, g) => s + g.count, 0) },
+              { label: 'Grantees', n: mx.grantees.length },
             ].map(({ label, n }) => (
               <span key={label} className="flex items-center gap-1">
                 <span className="font-medium text-foreground">{n}</span> {label}
@@ -634,35 +1341,58 @@ export function PermissionsMatrix() {
             <DatabasesTable rows={mx.databases} />
           </Section>
 
-          {/* ── Schemas ── */}
-          <Section icon={FolderOpen} title="Schemas" count={mx.schemas.length}
-            empty="No user schemas found." sql={SQL_SCHEMAS}>
-            <SchemasTable rows={mx.schemas} />
-          </Section>
+          {/* ── Schema tree (schemas → tables / sequences / routines / types) ── */}
+          {mx.schemas.length > 0 ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <FolderOpen size={16} className="text-muted-foreground" />
+                  <h2 className="font-semibold text-sm">
+                    Schemas
+                    <Badge variant="secondary" className="ml-2 text-[10px] h-4 px-1.5">
+                      {mx.schemas.length}
+                    </Badge>
+                  </h2>
+                  {selectedDb && (
+                    <Badge variant="outline" className="text-[10px] h-4 px-1.5 font-mono">
+                      {selectedDb}
+                    </Badge>
+                  )}
+                  <span className="text-xs text-muted-foreground">
+                    · {mx.tables.length} tables · {mx.sequences.length} sequences
+                    · {mx.functions.length} routines · {mx.types.length} types
+                  </span>
+                </div>
+                <div className="flex items-center gap-1 flex-wrap">
+                  <SqlQueryButton queries={[
+                    { label: 'Schemas', sql: SQL_SCHEMAS },
+                    { label: 'Tables', sql: SQL_TABLES },
+                    { label: 'Sequences', sql: SQL_SEQUENCES },
+                    { label: 'Routines', sql: SQL_ROUTINES },
+                    { label: 'Types', sql: SQL_TYPES },
+                  ]} />
+                </div>
+              </div>
 
-          {/* ── Tables & Views ── */}
-          <Section icon={Table2} title="Tables, Views & Materialized Views"
-            count={mx.tables.length} empty="No tables or views found." sql={SQL_TABLES}>
-            <TablesTable rows={mx.tables} />
-          </Section>
-
-          {/* ── Sequences ── */}
-          <Section icon={Hash} title="Sequences" count={mx.sequences.length}
-            empty="No sequences found." sql={SQL_SEQUENCES}>
-            <SequencesTable rows={mx.sequences} />
-          </Section>
-
-          {/* ── Routines ── */}
-          <Section icon={Code2} title="Routines (functions, procedures, aggregates)"
-            count={mx.functions.length} empty="No user-defined routines found." sql={SQL_ROUTINES}>
-            <FunctionsTable rows={mx.functions} />
-          </Section>
-
-          {/* ── Types ── */}
-          <Section icon={Tag} title="Types (domains, enums, ranges)"
-            count={mx.types.length} empty="No user-defined types found." sql={SQL_TYPES}>
-            <TypesTable rows={mx.types} />
-          </Section>
+              <div className="space-y-2">
+                {mx.schemas.map((schema) => (
+                  <SchemaBlock
+                    key={schema.oid}
+                    schema={schema}
+                    tables={mx.tables.filter((t) => t.schema === schema.name)}
+                    sequences={mx.sequences.filter((s) => s.schema === schema.name)}
+                    functions={mx.functions.filter((f) => f.schema === schema.name)}
+                    types={mx.types.filter((t) => t.schema === schema.name)}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <FolderOpen size={16} />
+              <span>No user schemas found.</span>
+            </div>
+          )}
 
           {/* ── Foreign Data Wrappers ── */}
           <Section icon={Globe} title="Foreign Data Wrappers"
@@ -674,6 +1404,62 @@ export function PermissionsMatrix() {
           <Section icon={Plug} title="Foreign Servers"
             count={mx.foreignServers.length} empty="No foreign servers configured." sql={SQL_FOREIGN_SERVERS}>
             <SimpleUsageTable rows={mx.foreignServers} nameLabel="Server" />
+          </Section>
+
+          {/* ── Column-level Grants ── */}
+          <Section icon={Columns} title="Column-level Grants"
+            count={mx.columnPrivileges.length}
+            empty="No explicit column-level grants for this role."
+            sql={SQL_COLUMN_PRIVS}>
+            <ColumnPrivilegesTable rows={mx.columnPrivileges} />
+          </Section>
+
+          {/* ── Row Security Policies ── */}
+          <Section icon={Lock} title="Row Security Policies"
+            count={mx.rlsPolicies.length}
+            empty="No tables with row-level security enabled."
+            sql={SQL_RLS}>
+            <RlsTable rows={mx.rlsPolicies} />
+          </Section>
+
+          {/* ── Default Privileges ── */}
+          <Section icon={Star} title="Default Privileges"
+            count={mx.defaultPrivileges.length}
+            empty="No default privilege rules targeting this role."
+            sql={SQL_DEFAULT_PRIVS}>
+            <DefaultPrivilegesTable rows={mx.defaultPrivileges} />
+          </Section>
+
+          {/* ── Configuration Settings ── */}
+          <Section icon={Settings} title="Configuration Settings"
+            count={mx.configSettings.length}
+            empty="No session configuration set for this role via ALTER ROLE … SET."
+            sql={SQL_CONFIG}>
+            <ConfigTable rows={mx.configSettings} />
+          </Section>
+
+          {/* ── Tablespaces ── */}
+          <Section icon={Server} title="Tablespace Access"
+            count={mx.tablespaces.length}
+            empty="No tablespace access granted to this role."
+            sql={SQL_TABLESPACES}>
+            <TablespacesTable rows={mx.tablespaces} />
+          </Section>
+
+          {/* ── Owned Objects ── */}
+          <Section icon={Package} title="Owned Objects"
+            count={mx.ownedObjects.length}
+            empty="This role does not own any objects."
+            sql={SQL_OWNED}>
+            <OwnedObjectsTable rows={mx.ownedObjects} />
+          </Section>
+
+          {/* ── Role Grantees ── */}
+          <Section icon={Users} title="Role Grantees (members of this role)"
+            count={mx.grantees.length}
+            empty="No other roles have been granted membership in this role."
+            sql={SQL_GRANTEES}>
+            <GranteesTable rows={mx.grantees} />
           </Section>
         </div>
       )}
