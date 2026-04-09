@@ -62,7 +62,7 @@ export function AddServerDialog({ open, onOpenChange }: Props) {
               <Label>{label}</Label>
               <Input
                 type={type ?? 'text'}
-                value={form[key]}
+                value={form[key] as string}
                 onChange={set(key)}
                 placeholder={placeholder}
                 required={key !== 'password'}

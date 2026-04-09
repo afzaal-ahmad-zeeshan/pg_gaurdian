@@ -17,7 +17,10 @@
       "Bash(find /c/Users/afzaa/Documents/VSCode/vibe/pg_gaurdian/src/app/api -name \"route.ts\" -exec basename {})",
       "Bash(head -8 grep -n \"max-w\\\\|p-6\\\\|flex flex-col\\\\|w-full\\\\|space-y\" \"C:\\\\Users\\\\afzaa\\\\Documents\\\\VSCode\\\\vibe\\\\pg_gaurdian\\\\src\\\\components\\\\grant\\\\GrantRevokePage.tsx\")",
       "Bash(grep -v \"//\")",
-      "Bash(grep -r \"connection\\\\|database\" src/app/api/pg/*.ts)"
+      "Bash(grep -r \"connection\\\\|database\" src/app/api/pg/*.ts)",
+      "WebSearch",
+      "Bash(docker build:*)",
+      "Bash(npm run:*)"
     ]
   }
 }

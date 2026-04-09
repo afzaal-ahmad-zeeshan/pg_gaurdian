@@ -358,7 +358,7 @@ export function ChownPage() {
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                 Show objects owned by
               </label>
-              <Select value={filterOwner || '_all_'} onValueChange={(v) => setFilterOwner(v === '_all_' ? '' : v)}>
+              <Select value={filterOwner || '_all_'} onValueChange={(v) => setFilterOwner(!v || v === '_all_' ? '' : v)}>
                 <SelectTrigger className="font-mono">
                   <SelectValue />
                 </SelectTrigger>
