@@ -1,0 +1,46 @@
+name: Build and publish release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-binaries:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Next.js app
+        run: npm run build
+
+      - name: Prepare assets for bundling
+        run: node scripts/prepare-exe.js
+
+      - name: Build platform binaries
+        run: npx pkg .next/standalone/server.js --config package.json --out-path dist
+
+      - name: Rename binaries
+        run: |
+          mv dist/server-linux       dist/pg-guardian-linux-x64     2>/dev/null || true
+          mv dist/server-linux-arm64 dist/pg-guardian-linux-arm64   2>/dev/null || true
+          mv dist/server-win.exe     dist/pg-guardian-win-x64.exe   2>/dev/null || true
+          mv dist/server-macos       dist/pg-guardian-macos-x64     2>/dev/null || true
+          mv dist/server-macos-arm64 dist/pg-guardian-macos-arm64   2>/dev/null || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/pg-guardian-*
+          generate_release_notes: true
