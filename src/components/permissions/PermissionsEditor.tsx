@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Database, FolderOpen, Table2, Hash, Code2, Tag, ChevronDown, ChevronRight,
-  Play, Loader2, CheckCircle2, XCircle, AlertTriangle, RotateCcw, LucideIcon,
+  Play, Loader2, CheckCircle2, XCircle, AlertTriangle, RotateCcw, LucideIcon, ShieldCheck,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -11,10 +11,11 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { ServerSelect } from '@/components/ServerSelect'
+import { DatabaseSelect } from '@/components/DatabaseSelect'
 import { useServerContext } from '@/context/ServerContext'
 import { cn } from '@/lib/utils'
-import type { PgRole, PgDatabase, PermissionsMatrix } from '@/types'
-import type { ApplyStatementResult } from '@/app/api/pg/permissions-editor/route'
+import type { PgRole, PermissionsMatrix } from '@/types'
+import type { ApplyStatementResult, ValidateResponse } from '@/app/api/pg/permissions-editor/route'
 
 // ─── Privilege lists per object type ─────────────────────────────────────────
 
@@ -281,25 +282,47 @@ function PermSection({
 
 // ─── Pending changes bar ──────────────────────────────────────────────────────
 
-interface Change { type: string; object: string; privilege: string; grant: boolean }
+interface Change {
+  type: string
+  object: string
+  privilege: string
+  grant: boolean
+  /** false = connected user is not superuser and doesn't own this object */
+  canGrant: boolean
+}
 
 function PendingBar({
-  changes, role, onApply, onDiscard, isPending,
+  changes, role, connectedUser, isSuperuser, onApply, onDiscard, isPending,
+  validateResult, onValidate, isValidating,
 }: {
   changes: Change[]
   role: string
+  connectedUser: string
+  isSuperuser: boolean
   onApply: () => void
   onDiscard: () => void
   isPending: boolean
+  validateResult: ValidateResponse | null
+  onValidate: () => void
+  isValidating: boolean
 }) {
   const [showSql, setShowSql] = useState(false)
+  const [showValidateDetail, setShowValidateDetail] = useState(false)
   const grants = changes.filter((c) => c.grant).length
   const revokes = changes.filter((c) => !c.grant).length
+  const riskyCount = changes.filter((c) => !c.canGrant).length
 
-  const statements = changes.map((c) => buildStatement(c.type, c.object, c.privilege, c.grant, role))
+  const statements = changes.map((c) => {
+    const sql = buildStatement(c.type, c.object, c.privilege, c.grant, role)
+    return c.canGrant ? sql : `${sql}  -- ⚠ may have no effect (not owner / no GRANT OPTION)`
+  })
+
+  const willApplyCount = validateResult ? validateResult.results.filter((r) => r.ok).length : null
+  const willFailCount  = validateResult ? validateResult.results.filter((r) => !r.ok).length : null
 
   return (
     <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/20 p-4 space-y-3">
+      {/* Title row */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <AlertTriangle size={15} className="text-amber-600 dark:text-amber-400 shrink-0" />
@@ -323,18 +346,106 @@ function PendingBar({
           <Button
             variant="outline" size="sm"
             onClick={onDiscard}
-            disabled={isPending}
+            disabled={isPending || isValidating}
             className="h-7 text-xs"
           >
             <RotateCcw size={11} className="mr-1" /> Discard
           </Button>
-          <Button size="sm" onClick={onApply} disabled={isPending} className="h-7 text-xs">
-            {isPending
-              ? <><Loader2 size={11} className="mr-1 animate-spin" />Applying…</>
-              : <><Play size={11} className="mr-1" />Apply {changes.length} change{changes.length !== 1 ? 's' : ''}</>}
-          </Button>
+          {!validateResult ? (
+            <Button size="sm" onClick={onValidate} disabled={isValidating || isPending} className="h-7 text-xs">
+              {isValidating
+                ? <><Loader2 size={11} className="mr-1 animate-spin" />Validating…</>
+                : <><ShieldCheck size={11} className="mr-1" />Validate Changes</>}
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              onClick={onApply}
+              disabled={isPending || willApplyCount === 0}
+              className="h-7 text-xs"
+            >
+              {isPending
+                ? <><Loader2 size={11} className="mr-1 animate-spin" />Applying…</>
+                : willFailCount! > 0
+                  ? <><Play size={11} className="mr-1" />Apply {willApplyCount} of {changes.length}</>
+                  : <><Play size={11} className="mr-1" />Apply {changes.length} change{changes.length !== 1 ? 's' : ''}</>}
+            </Button>
+          )}
         </div>
       </div>
+
+      {/* Executor identity + pre-validate privilege warning */}
+      <div className="flex items-start gap-2 flex-wrap">
+        <span className="text-xs text-amber-700 dark:text-amber-400">
+          Executing as{' '}
+          <span className="font-mono font-medium">{connectedUser}</span>
+          {isSuperuser && (
+            <Badge className="ml-1.5 text-[10px] h-3.5 px-1 bg-amber-200 text-amber-800 border-amber-400 dark:bg-amber-900 dark:text-amber-200">
+              superuser
+            </Badge>
+          )}
+        </span>
+        {!validateResult && riskyCount > 0 && (
+          <span className="flex items-center gap-1 text-xs text-red-700 dark:text-red-400">
+            <XCircle size={12} className="shrink-0" />
+            {riskyCount} statement{riskyCount !== 1 ? 's' : ''} may have no effect —{' '}
+            <span className="font-mono font-medium">{connectedUser}</span> is not the object owner and may lack GRANT OPTION
+          </span>
+        )}
+      </div>
+
+      {/* Validation results panel */}
+      {validateResult && (
+        <div className={cn(
+          'rounded-md border p-3 space-y-2 text-xs',
+          willFailCount === 0
+            ? 'border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950/20'
+            : 'border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/20',
+        )}>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              {willFailCount === 0
+                ? <CheckCircle2 size={13} className="text-green-600 dark:text-green-400 shrink-0" />
+                : <XCircle size={13} className="text-red-600 dark:text-red-400 shrink-0" />}
+              <span className={cn(
+                'font-medium',
+                willFailCount === 0
+                  ? 'text-green-700 dark:text-green-300'
+                  : 'text-red-700 dark:text-red-300',
+              )}>
+                {willFailCount === 0
+                  ? `All ${willApplyCount} change${willApplyCount !== 1 ? 's' : ''} will apply — ${connectedUser} has permission`
+                  : `${willApplyCount} will apply · ${willFailCount} will have no effect`}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowValidateDetail((v) => !v)}
+              className="text-muted-foreground underline underline-offset-2 shrink-0"
+            >
+              {showValidateDetail ? 'Hide' : 'Show'} details
+            </button>
+          </div>
+
+          {showValidateDetail && (
+            <div className="space-y-1.5 pt-1">
+              {validateResult.results.map((r, i) => (
+                <div key={i} className="space-y-0.5">
+                  <div className="flex items-start gap-1.5">
+                    {r.ok
+                      ? <CheckCircle2 size={11} className="text-green-500 mt-0.5 shrink-0" />
+                      : <XCircle size={11} className="text-red-500 mt-0.5 shrink-0" />}
+                    <span className="font-mono break-all">{r.sql}</span>
+                  </div>
+                  {!r.ok && r.error && (
+                    <p className="text-red-600 dark:text-red-400 pl-4 break-all">{r.error}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {showSql && (
         <pre className="rounded bg-muted/60 border border-border px-3 py-2.5 text-xs font-mono overflow-x-auto max-h-48">
@@ -440,6 +551,7 @@ export function PermissionsEditor() {
   // origState: what the DB currently has (set from matrix, updated after apply)
   const [origState, setOrigState] = useState<Map<string, boolean>>(new Map())
   const [applyResults, setApplyResults] = useState<ApplyStatementResult[] | null>(null)
+  const [validateResult, setValidateResult] = useState<ValidateResponse | null>(null)
 
   // Prevents permState reset when the matrix refetches after an apply
   const preserveEditsRef = useRef(false)
@@ -451,6 +563,7 @@ export function PermissionsEditor() {
     setPermState(new Map())
     setOrigState(new Map())
     setApplyResults(null)
+    setValidateResult(null)
   }, [selectedId])
 
   // Reset when database or role changes (new context)
@@ -458,23 +571,11 @@ export function PermissionsEditor() {
     setPermState(new Map())
     setOrigState(new Map())
     setApplyResults(null)
+    setValidateResult(null)
   }, [selectedDb, selectedRole])
 
   // Derive connection pointing at the chosen database
   const dbConnection = selected && selectedDb ? { ...selected, database: selectedDb } : selected ?? null
-
-  // ── Databases list ──────────────────────────────────────────────────────────
-  const dbsQuery = useQuery<PgDatabase[]>({
-    queryKey: ['databases', selectedId],
-    queryFn: () =>
-      fetch('/api/pg/databases', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ connection: selected }),
-      }).then((r) => r.json()),
-    enabled: !!selected,
-  })
-  const databases = dbsQuery.data ?? []
 
   // ── All roles ───────────────────────────────────────────────────────────────
   const rolesQuery = useQuery<PgRole[]>({
@@ -512,17 +613,17 @@ export function PermissionsEditor() {
     preserveEditsRef.current = false
   }, [matrixQuery.data])
 
-  // ── Compute diff ────────────────────────────────────────────────────────────
+  // ── Connected user's role info ───────────────────────────────────────────
+  const connectedUser = selected?.user ?? ''
+  const connectedRole = roles.find((r) => r.rolname === connectedUser)
+  const isSuperuser = connectedRole?.rolsuper ?? false
+
+  // ── Compute diff (canGrant filled after mx is available below) ────────────
   const changes: Change[] = []
-  for (const [key, val] of permState) {
-    if (origState.get(key) !== val) {
-      const { type, object, privilege } = parseKey(key)
-      changes.push({ type, object, privilege, grant: val })
-    }
-  }
 
   // ── Toggle a single checkbox ─────────────────────────────────────────────
   function toggle(fullKey: string) {
+    setValidateResult(null) // stale once a new edit is made
     setPermState((prev) => {
       const next = new Map(prev)
       next.set(fullKey, !(prev.get(fullKey) ?? false))
@@ -534,7 +635,24 @@ export function PermissionsEditor() {
   function discard() {
     setPermState(new Map(origState))
     setApplyResults(null)
+    setValidateResult(null)
   }
+
+  // ── Validate mutation (dry-run in a transaction that always rolls back) ──
+  const validateMutation = useMutation({
+    mutationFn: () => {
+      const statements = changes
+        .map((c) => buildStatement(c.type, c.object, c.privilege, c.grant, selectedRole))
+        .filter(Boolean)
+      return fetch('/api/pg/permissions-editor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection: dbConnection, mode: 'validate', statements }),
+      }).then((r) => r.json() as Promise<ValidateResponse>)
+    },
+    onSuccess: (data) => setValidateResult(data),
+    onError: () => setValidateResult(null),
+  })
 
   // ── Apply mutation ───────────────────────────────────────────────────────
   const mutation = useMutation({
@@ -550,6 +668,7 @@ export function PermissionsEditor() {
     },
     onSuccess: (data: { results: ApplyStatementResult[] }) => {
       setApplyResults(data.results)
+      setValidateResult(null)
       // Refetch matrix to get actual DB state; preserve edited permState
       preserveEditsRef.current = true
       queryClient.invalidateQueries({
@@ -563,6 +682,25 @@ export function PermissionsEditor() {
 
   // ── Build section rows from matrix ───────────────────────────────────────
   const mx = matrixQuery.data
+
+  // ── Ownership map + diff (needs mx) ──────────────────────────────────────
+  const ownerMap = new Map<string, string>()
+  if (mx) {
+    for (const db of mx.databases)   ownerMap.set(`database:${db.name}`, db.owner)
+    for (const s  of mx.schemas)     ownerMap.set(`schema:${s.name}`, s.owner)
+    for (const t  of mx.tables)      ownerMap.set(`table:${t.schema}.${t.name}`, t.owner)
+    for (const s  of mx.sequences)   ownerMap.set(`sequence:${s.schema}.${s.name}`, s.owner)
+    for (const f  of mx.functions)   ownerMap.set(`function:${f.schema}.${f.name}(${f.args})`, f.owner)
+    for (const ty of mx.types)       ownerMap.set(`type:${ty.schema}.${ty.name}`, ty.owner)
+  }
+  for (const [key, val] of permState) {
+    if (origState.get(key) !== val) {
+      const { type, object, privilege } = parseKey(key)
+      const owner = ownerMap.get(`${type}:${object}`)
+      const canGrant = isSuperuser || owner === connectedUser
+      changes.push({ type, object, privilege, grant: val, canGrant })
+    }
+  }
 
   const dbRows: PermRow[] = (mx?.databases ?? []).map((db) => ({
     rowKey: `database:${db.name}`,
@@ -619,23 +757,12 @@ export function PermissionsEditor() {
             <div className="flex items-center gap-1.5">
               <Database size={14} className="text-muted-foreground shrink-0" />
               <span className="text-sm text-muted-foreground whitespace-nowrap">Database</span>
-              <Select value={selectedDb} onValueChange={(v) => v && setSelectedDb(v)}>
-                <SelectTrigger className="w-40">
-                  <SelectValue placeholder="Select database…">
-                    <span className="font-mono text-sm">{selectedDb || 'Select…'}</span>
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {databases.map((db) => (
-                    <SelectItem key={db.datname} value={db.datname}>
-                      <span className="font-mono text-sm">{db.datname}</span>
-                      {db.datname === selected.database && (
-                        <span className="text-muted-foreground ml-1.5 text-xs">connected</span>
-                      )}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <DatabaseSelect
+                connection={selected}
+                value={selectedDb}
+                onChange={setSelectedDb}
+                className="w-40"
+              />
             </div>
 
             {/* Role */}
@@ -700,9 +827,14 @@ export function PermissionsEditor() {
             <PendingBar
               changes={changes}
               role={selectedRole}
+              connectedUser={connectedUser}
+              isSuperuser={isSuperuser}
               onApply={() => mutation.mutate()}
               onDiscard={discard}
               isPending={mutation.isPending}
+              validateResult={validateResult}
+              onValidate={() => validateMutation.mutate()}
+              isValidating={validateMutation.isPending}
             />
           )}
 
@@ -759,9 +891,14 @@ export function PermissionsEditor() {
                 <PendingBar
                   changes={changes}
                   role={selectedRole}
+                  connectedUser={connectedUser}
+                  isSuperuser={isSuperuser}
                   onApply={() => mutation.mutate()}
                   onDiscard={discard}
                   isPending={mutation.isPending}
+                  validateResult={validateResult}
+                  onValidate={() => validateMutation.mutate()}
+                  isValidating={validateMutation.isPending}
                 />
               )}
             </div>

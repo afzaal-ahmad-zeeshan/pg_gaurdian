@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
 
   // ── Object list for dropdowns ───────────────────────────────────────────────
   if (mode === 'resources') {
-    const { type } = body as { type: GrantObjectType }
+    const { type, schema } = body as { type: GrantObjectType; schema?: string }
     try {
       let sql: string
       switch (type) {
@@ -34,15 +34,39 @@ export async function POST(req: NextRequest) {
         case 'all_functions':
           sql = `SELECT nspname AS name FROM pg_catalog.pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname <> 'information_schema' ORDER BY nspname`
           break
-        case 'table':
+        case 'table': {
+          if (schema) {
+            const { rows } = await pool.query<{ name: string }>(
+              `SELECT n.nspname||'.'||c.relname AS name FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','v','m','f','p') AND n.nspname = $1 ORDER BY c.relname`,
+              [schema],
+            )
+            return NextResponse.json({ objects: rows.map((r) => r.name) })
+          }
           sql = `SELECT n.nspname||'.'||c.relname AS name FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','v','m','f','p') AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast') ORDER BY name`
           break
-        case 'sequence':
+        }
+        case 'sequence': {
+          if (schema) {
+            const { rows } = await pool.query<{ name: string }>(
+              `SELECT n.nspname||'.'||c.relname AS name FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname = $1 ORDER BY c.relname`,
+              [schema],
+            )
+            return NextResponse.json({ objects: rows.map((r) => r.name) })
+          }
           sql = `SELECT n.nspname||'.'||c.relname AS name FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema','pg_toast') ORDER BY name`
           break
-        case 'function':
+        }
+        case 'function': {
+          if (schema) {
+            const { rows } = await pool.query<{ name: string }>(
+              `SELECT n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')' AS name FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname = $1 ORDER BY p.proname`,
+              [schema],
+            )
+            return NextResponse.json({ objects: rows.map((r) => r.name) })
+          }
           sql = `SELECT n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')' AS name FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast') ORDER BY name`
           break
+        }
         default:
           return NextResponse.json({ objects: [] })
       }
@@ -306,6 +330,50 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ isSuperuser, results })
+  }
+
+  // ── Validate: dry-run every statement in a transaction that always rolls back ──
+  if (mode === 'validate') {
+    const { statements } = body as { statements: string[] }
+    if (!statements?.length) return NextResponse.json({ error: 'No statements' }, { status: 400 })
+
+    const client = await pool.connect()
+    try {
+      const { rows: userRows } = await client.query<{ username: string; rolsuper: boolean }>(
+        `SELECT current_user AS username, r.rolsuper FROM pg_catalog.pg_roles r WHERE r.rolname = current_user`,
+      )
+      const { username, rolsuper } = userRows[0] ?? { username: 'unknown', rolsuper: false }
+
+      await client.query('BEGIN')
+      const results: { sql: string; ok: boolean; error?: string }[] = []
+
+      for (const sql of statements) {
+        await client.query('SAVEPOINT _validate')
+        try {
+          await client.query(sql)
+          await client.query('RELEASE SAVEPOINT _validate')
+          results.push({ sql, ok: true })
+        } catch (err) {
+          await client.query('ROLLBACK TO SAVEPOINT _validate')
+          results.push({ sql, ok: false, error: err instanceof Error ? err.message : String(err) })
+        }
+      }
+
+      // Always rollback — dry run only; no changes are persisted
+      await client.query('ROLLBACK')
+
+      return NextResponse.json({
+        connectedUser: username,
+        isSuperuser: rolsuper,
+        allOk: results.every((r) => r.ok),
+        results,
+      })
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {})
+      return NextResponse.json({ error: String(err) }, { status: 500 })
+    } finally {
+      client.release()
+    }
   }
 
   // ── Execute GRANT / REVOKE statements ───────────────────────────────────────

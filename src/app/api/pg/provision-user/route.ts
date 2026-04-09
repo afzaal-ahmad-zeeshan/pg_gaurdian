@@ -35,6 +35,57 @@ export async function POST(req: NextRequest) {
     })
   }
 
+  if (action === 'validate') {
+    const { statements } = body
+    if (!Array.isArray(statements) || statements.length === 0) {
+      return NextResponse.json({ error: 'No statements provided' }, { status: 400 })
+    }
+    const client = await pool.connect()
+    try {
+      const { rows: userRows } = await client.query<{ username: string; rolsuper: boolean; rolcreaterole: boolean }>(
+        `SELECT current_user AS username, r.rolsuper, r.rolcreaterole
+           FROM pg_catalog.pg_roles r WHERE r.rolname = current_user`,
+      )
+      const { username, rolsuper, rolcreaterole } = userRows[0] ?? {
+        username: 'unknown', rolsuper: false, rolcreaterole: false,
+      }
+
+      await client.query('BEGIN')
+      const results: { sql: string; ok: boolean; error?: string }[] = []
+
+      for (const sql of statements as string[]) {
+        await client.query('SAVEPOINT _validate')
+        try {
+          await client.query(sql)
+          await client.query('RELEASE SAVEPOINT _validate')
+          results.push({ sql, ok: true })
+        } catch (err: unknown) {
+          await client.query('ROLLBACK TO SAVEPOINT _validate')
+          const message = err instanceof Error ? err.message : String(err)
+          results.push({ sql, ok: false, error: message })
+        }
+      }
+
+      // Always rollback — dry run only
+      await client.query('ROLLBACK')
+
+      const allOk = results.every((r) => r.ok)
+      return NextResponse.json({
+        ok: allOk,
+        connectedUser: username,
+        isSuperuser: rolsuper,
+        canManageRoles: rolsuper || rolcreaterole,
+        results,
+      })
+    } catch (err: unknown) {
+      await client.query('ROLLBACK').catch(() => {})
+      const message = err instanceof Error ? err.message : String(err)
+      return NextResponse.json({ ok: false, error: message }, { status: 500 })
+    } finally {
+      client.release()
+    }
+  }
+
   if (action === 'execute') {
     const { statements } = body
     if (!Array.isArray(statements) || statements.length === 0) {

@@ -8,6 +8,7 @@ import {
   ChevronDown, ChevronRight,
 } from 'lucide-react'
 import { SqlQueryButton } from '@/components/SqlQueryButton'
+import { DatabaseSelect } from '@/components/DatabaseSelect'
 import { Badge } from '@/components/ui/badge'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -18,7 +19,7 @@ import {
 import { ServerSelect } from '@/components/ServerSelect'
 import { useServerContext } from '@/context/ServerContext'
 import type {
-  PgRole, PgDatabase, PermissionsMatrix, PgCurrentUser,
+  PgRole, PermissionsMatrix, PgCurrentUser,
   DatabasePermission, SchemaPermission, TablePermission,
   SequencePermission, FunctionPermission, TypePermission,
   FdwPermission, ForeignServerPermission,
@@ -1158,21 +1159,7 @@ export function PermissionsMatrix() {
     ? { ...selected, database: selectedDb }
     : selected ?? null
 
-  // 1 ─ Fetch all databases on this server (pg_database is cluster-level)
-  const dbsQuery = useQuery<PgDatabase[]>({
-    queryKey: ['databases', selectedId],
-    queryFn: () =>
-      fetch('/api/pg/databases', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ connection: selected }),
-      }).then((r) => r.json()),
-    enabled: !!selected,
-  })
-
-  const databases = dbsQuery.data ?? []
-
-  // 2 ─ Fetch login roles (cluster-level — always use the original connection)
+  // ─ Fetch login roles (cluster-level — always use the original connection)
   const usersQuery = useQuery<{ users: PgRole[]; currentUser: PgCurrentUser }>({
     queryKey: ['users', selectedId],
     queryFn: () =>
@@ -1227,27 +1214,16 @@ export function PermissionsMatrix() {
 
         <div className="flex items-center gap-3 flex-wrap">
           {/* Database selector */}
-          {databases.length > 0 && (
+          {selected && (
             <div className="flex items-center gap-1.5">
               <Database size={14} className="text-muted-foreground shrink-0" />
               <span className="text-sm text-muted-foreground whitespace-nowrap">Database</span>
-              <Select value={selectedDb} onValueChange={(v) => v && setSelectedDb(v)}>
-                <SelectTrigger className="w-40">
-                  <SelectValue placeholder="Select database…">
-                    <span className="font-mono text-sm">{selectedDb || 'Select database…'}</span>
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {databases.map((db) => (
-                    <SelectItem key={db.datname} value={db.datname}>
-                      <span className="font-mono text-sm">{db.datname}</span>
-                      {db.datname === selected?.database && (
-                        <span className="text-muted-foreground ml-1.5 text-xs">connected</span>
-                      )}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <DatabaseSelect
+                connection={selected}
+                value={selectedDb}
+                onChange={setSelectedDb}
+                className="w-40"
+              />
             </div>
           )}
 

@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   KeyRound, ChevronDown, Play, Loader2, CheckCircle2, XCircle,
-  AlertTriangle, Info, RotateCcw,
+  AlertTriangle, Info, RotateCcw, ShieldCheck,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -185,29 +185,32 @@ function ObjectPicker({
   type,
   value,
   onChange,
+  schema,
 }: {
   connection: ServerConnection
   type: GrantObjectType
   value: string
   onChange: (v: string) => void
+  schema?: string
 }) {
   const [showCustom, setShowCustom] = useState(false)
   const [customValue, setCustomValue] = useState('')
 
-  useEffect(() => { setShowCustom(false); setCustomValue('') }, [type])
+  useEffect(() => { setShowCustom(false); setCustomValue('') }, [type, schema])
 
   const { data: objects = [], isFetching } = useQuery({
-    queryKey: ['grant-objects', connection.id, connection.database, type],
+    queryKey: ['grant-objects', connection.id, connection.database, type, schema ?? ''],
     queryFn: async () => {
       const res = await fetch('/api/pg/grant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ connection, mode: 'resources', type }),
+        body: JSON.stringify({ connection, mode: 'resources', type, schema }),
       })
       const data = await res.json() as { objects: string[] }
       return data.objects ?? []
     },
     staleTime: 30_000,
+    enabled: type === 'database' || type === 'schema' || !!schema,
   })
 
   if (showCustom) {
@@ -350,6 +353,13 @@ interface PrivResult {
 interface VerifyResult {
   isSuperuser: boolean
   results: PrivResult[]
+}
+
+interface ValidateResult {
+  connectedUser: string
+  isSuperuser: boolean
+  allOk: boolean
+  results: { sql: string; ok: boolean; error?: string }[]
 }
 
 // ─── Execute result display ───────────────────────────────────────────────────
@@ -499,13 +509,16 @@ export function GrantRevokePage() {
   const { selected, selectedId } = useServerContext()
   const queryClient = useQueryClient()
 
-  // Database selector — scopes object picker to the chosen database
+  // Database selector — connection context for non-database object types
   const [selectedDb, setSelectedDb] = useState('')
+  // Schema selector — second level of cascade; also the "object" for schema/bulk types
+  const [selectedSchema, setSelectedSchema] = useState('')
 
   // Form state
   const [action, setAction] = useState<'GRANT' | 'REVOKE'>('GRANT')
   const [role, setRole] = useState('')
   const [objectType, setObjectType] = useState<GrantObjectType>('schema')
+  // object: target name for 'database' type (db name) and specific types (table/seq/fn qualified name)
   const [object, setObject] = useState('')
   const [privileges, setPrivileges] = useState<string[]>(['USAGE'])
   const [withGrantOption, setWithGrantOption] = useState(false)
@@ -520,22 +533,61 @@ export function GrantRevokePage() {
   const [execResult, setExecResult] = useState<ExecResult | null>(null)
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null)
   const [isVerifying, setIsVerifying] = useState(false)
+  const [validateResult, setValidateResult] = useState<ValidateResult | null>(null)
 
-  // Reset database selection when server switches
-  useEffect(() => { setSelectedDb('') }, [selectedId])
+  // Reset everything when server switches
+  useEffect(() => {
+    setSelectedDb('')
+    setSelectedSchema('')
+    setObject('')
+    setExecResult(null)
+    setVerifyResult(null)
+    setValidateResult(null)
+  }, [selectedId])
 
-  // For database-type objects the connection stays cluster-level;
-  // for all others (schema, table, sequence, function…) connect to the chosen db.
+  // Derived flags
+  const isSchemaLevel = (['schema', 'all_tables', 'all_sequences', 'all_functions'] as GrantObjectType[]).includes(objectType)
+  const isSpecificObject = (['table', 'sequence', 'function'] as GrantObjectType[]).includes(objectType)
+
+  // The actual target for the SQL statement:
+  // - 'database' type → the database name picked via ObjectPicker
+  // - schema/bulk types → the selected schema name
+  // - specific types → the schema.name picked via schema-filtered ObjectPicker
+  const effectiveObject = objectType === 'database'
+    ? object
+    : isSchemaLevel
+      ? selectedSchema
+      : object
+
+  // Connection context: for non-database object types we connect to the chosen database;
+  // for database-level grants the cluster-level connection is fine.
   const dbConnection: ServerConnection | null = selected
     ? (selectedDb && objectType !== 'database' ? { ...selected, database: selectedDb } : selected)
     : null
 
-  // ── Current state: auto-fetch when role + object are both set ──────────────
+  // ── Schema list for cascade (fetched when a database is selected) ──────────
+  const schemasQuery = useQuery({
+    queryKey: ['grant-schemas', selected?.id, selectedDb, objectType],
+    queryFn: async () => {
+      const res = await fetch('/api/pg/grant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection: dbConnection, mode: 'resources', type: 'schema' }),
+      })
+      const data = await res.json() as { objects: string[] }
+      return data.objects ?? []
+    },
+    enabled: !!dbConnection && objectType !== 'database',
+    staleTime: 30_000,
+  })
+  const schemas = schemasQuery.data ?? []
+
+  // ── Current state: auto-fetch when role + effective object are both set ────
   const isBulkType = SCHEMA_SCOPED.includes(objectType)
-  const canFetchCurrent = !!dbConnection && !!role && !!object && !isBulkType
+  const canFetchCurrent = !!dbConnection && !!role && !!effectiveObject && !isBulkType
 
   const currentStateQuery = useQuery({
-    queryKey: ['grant-current-state', selected?.id, selectedDb, role, objectType, object],
+    queryKey: ['grant-current-state', selected?.id, selectedDb, selectedSchema, role, objectType, effectiveObject],
     queryFn: async () => {
       const res = await fetch('/api/pg/grant', {
         method: 'POST',
@@ -545,7 +597,7 @@ export function GrantRevokePage() {
           mode: 'verify',
           role,
           objectType,
-          object,
+          object: effectiveObject,
           privileges: PRIVILEGES[objectType],
           action: 'GRANT',
           includeDefaultPrivs: false,
@@ -566,6 +618,7 @@ export function GrantRevokePage() {
     setPrivileges(granted.length > 0 ? granted : [])
     setExecResult(null)
     setVerifyResult(null)
+    setValidateResult(null)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentStateQuery.data])
 
@@ -573,13 +626,32 @@ export function GrantRevokePage() {
     ? new Set(currentStateQuery.data.results.filter((r) => r.effective).map((r) => r.privilege))
     : undefined
 
-  // Reset relevant fields when type changes
+  // ── Cascade handlers ────────────────────────────────────────────────────────
   function handleTypeChange(t: GrantObjectType) {
     setObjectType(t)
+    setSelectedSchema('')
     setObject('')
     setPrivileges([PRIVILEGES[t][0]])
     setExecResult(null)
     setVerifyResult(null)
+    setValidateResult(null)
+  }
+
+  function handleDbChange(db: string) {
+    setSelectedDb(db)
+    setSelectedSchema('')
+    setObject('')
+    setExecResult(null)
+    setVerifyResult(null)
+    setValidateResult(null)
+  }
+
+  function handleSchemaChange(schema: string) {
+    setSelectedSchema(schema)
+    setObject('')
+    setExecResult(null)
+    setVerifyResult(null)
+    setValidateResult(null)
   }
 
   function handleActionChange(a: 'GRANT' | 'REVOKE') {
@@ -588,6 +660,7 @@ export function GrantRevokePage() {
     setCascade(false)
     setExecResult(null)
     setVerifyResult(null)
+    setValidateResult(null)
   }
 
   async function runVerify(params: {
@@ -629,12 +702,25 @@ export function GrantRevokePage() {
       : undefined
 
   const statements = selected ? buildStatements({
-    action, role, objectType, object, privileges,
+    action, role, objectType, object: effectiveObject, privileges,
     withGrantOption, cascade, includeDefaultPrivs,
     pg15: pg15Grants,
   }) : []
 
   const canExecute = statements.length > 0
+
+  const validateMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/pg/grant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection: dbConnection, mode: 'validate', statements }),
+      })
+      return res.json() as Promise<ValidateResult>
+    },
+    onSuccess: (data) => setValidateResult(data),
+    onError: () => setValidateResult(null),
+  })
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -647,14 +733,13 @@ export function GrantRevokePage() {
     },
     onSuccess: (data) => {
       setExecResult(data)
-      // Invalidate the current-state cache so the dots re-fetch after the change
-      queryClient.invalidateQueries({ queryKey: ['grant-current-state', selected?.id, selectedDb, role, objectType, object] })
-      // Always verify — even on failure, show current state
-      runVerify({ role, objectType, object, privileges, action, includeDefaultPrivs })
+      setValidateResult(null)
+      queryClient.invalidateQueries({ queryKey: ['grant-current-state', selected?.id, selectedDb, selectedSchema, role, objectType, effectiveObject] })
+      runVerify({ role, objectType, object: effectiveObject, privileges, action, includeDefaultPrivs })
     },
   })
 
-  const showDefaultPrivsOption = HAS_DEFAULT_PRIVS.includes(objectType) && !!object
+  const showDefaultPrivsOption = HAS_DEFAULT_PRIVS.includes(objectType) && !!effectiveObject
 
   return (
     <div className="space-y-6">
@@ -747,49 +832,98 @@ export function GrantRevokePage() {
             )}
           </div>
 
-          {/* ── Database + object type + object ── */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">Database</label>
-              <DatabaseSelect
-                connection={selected}
-                value={selectedDb}
-                onChange={(db) => {
-                  setSelectedDb(db)
-                  setObject('')
-                  setExecResult(null)
-                  setVerifyResult(null)
-                }}
-                placeholder="Default database"
-                className="h-9"
-              />
+          {/* ── Target selection — cascading ── */}
+          <div className="space-y-4">
+            {/* Row 1: Object type + Database */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Object type</label>
+                <Select value={objectType} onValueChange={(v) => v && handleTypeChange(v as GrantObjectType)}>
+                  <SelectTrigger className="h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.entries(OBJECT_TYPE_LABELS) as [GrantObjectType, string][]).map(([k, v]) => (
+                      <SelectItem key={k} value={k} className="text-sm">{v}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Database: context picker for non-database types; object picker for database type */}
+              <div className="space-y-1.5">
+                {objectType === 'database' ? (
+                  <>
+                    <label className="text-sm font-medium">Database</label>
+                    <ObjectPicker
+                      connection={dbConnection!}
+                      type="database"
+                      value={object}
+                      onChange={(v) => { setObject(v); setExecResult(null); setVerifyResult(null); setValidateResult(null) }}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <label className="text-sm font-medium">Database</label>
+                    <DatabaseSelect
+                      connection={selected}
+                      value={selectedDb}
+                      onChange={handleDbChange}
+                      placeholder="Select database…"
+                      className="h-9"
+                    />
+                  </>
+                )}
+              </div>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">Object type</label>
-              <Select value={objectType} onValueChange={(v) => v && handleTypeChange(v as GrantObjectType)}>
-                <SelectTrigger className="h-9">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(Object.entries(OBJECT_TYPE_LABELS) as [GrantObjectType, string][]).map(([k, v]) => (
-                    <SelectItem key={k} value={k} className="text-sm">{v}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {/* Row 2: Schema (all non-database types) */}
+            {objectType !== 'database' && (
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Schema</label>
+                {!selectedDb ? (
+                  <div className="flex h-9 items-center rounded-md border border-input px-3 text-sm text-muted-foreground">
+                    Select a database first
+                  </div>
+                ) : schemasQuery.isFetching ? (
+                  <div className="flex h-9 items-center gap-2 rounded-md border border-input px-3 text-sm text-muted-foreground">
+                    <Loader2 size={13} className="animate-spin" /> Loading schemas…
+                  </div>
+                ) : (
+                  <Select value={selectedSchema} onValueChange={(v) => v && handleSchemaChange(v)}>
+                    <SelectTrigger className="h-9 font-mono text-sm">
+                      <SelectValue placeholder="Select schema…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {schemas.map((s) => (
+                        <SelectItem key={s} value={s} className="text-sm font-mono">{s}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            )}
 
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">
-                {SCHEMA_SCOPED.includes(objectType) ? 'Schema' : OBJECT_TYPE_LABELS[objectType]}
-              </label>
-              <ObjectPicker
-                connection={dbConnection!}
-                type={objectType}
-                value={object}
-                onChange={(v) => { setObject(v); setExecResult(null); setVerifyResult(null) }}
-              />
-            </div>
+            {/* Row 3: Specific object (table / view, sequence, function) */}
+            {isSpecificObject && selectedSchema && (
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">{OBJECT_TYPE_LABELS[objectType]}</label>
+                <ObjectPicker
+                  connection={dbConnection!}
+                  type={objectType}
+                  schema={selectedSchema}
+                  value={object}
+                  onChange={(v) => { setObject(v); setExecResult(null); setVerifyResult(null); setValidateResult(null) }}
+                />
+              </div>
+            )}
+
+            {/* Cascade hint when schema is selected but it's a schema-level type */}
+            {isSchemaLevel && selectedSchema && (
+              <p className="text-xs text-muted-foreground">
+                Target: <code className="font-mono">{selectedSchema}</code> schema in <code className="font-mono">{selectedDb || 'default database'}</code>
+              </p>
+            )}
           </div>
 
           {/* ── Privileges ── */}
@@ -845,7 +979,7 @@ export function GrantRevokePage() {
           </div>
 
           {/* ── PG 15+ object grants (shown when granting schema access) ── */}
-          {objectType === 'schema' && action === 'GRANT' && object && (
+          {objectType === 'schema' && action === 'GRANT' && effectiveObject && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 overflow-hidden">
               <div className="flex items-start gap-2 px-4 py-3 border-b border-amber-200 dark:border-amber-800">
                 <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
@@ -933,31 +1067,81 @@ export function GrantRevokePage() {
             </div>
           )}
 
-          {/* ── Execute ── */}
-          <div className="flex items-center gap-3">
+          {/* ── Validate + Execute ── */}
+          <div className="flex items-center gap-3 flex-wrap">
             <Button
-              onClick={() => mutation.mutate()}
-              disabled={!canExecute || mutation.isPending}
+              variant="outline"
+              onClick={() => { setValidateResult(null); validateMutation.mutate() }}
+              disabled={!canExecute || validateMutation.isPending || mutation.isPending}
+            >
+              {validateMutation.isPending
+                ? <><Loader2 size={14} className="mr-2 animate-spin" />Validating…</>
+                : <><ShieldCheck size={14} className="mr-2" />Validate</>}
+            </Button>
+
+            <Button
+              onClick={() => { setValidateResult(null); mutation.mutate() }}
+              disabled={!canExecute || mutation.isPending || validateMutation.isPending}
               variant={action === 'REVOKE' ? 'destructive' : 'default'}
               className="min-w-[140px]"
             >
               {mutation.isPending
-                ? <Loader2 size={14} className="mr-2 animate-spin" />
-                : <Play size={14} className="mr-2" />}
-              {action === 'GRANT' ? 'Grant privileges' : 'Revoke privileges'}
+                ? <><Loader2 size={14} className="mr-2 animate-spin" />Executing…</>
+                : <><Play size={14} className="mr-2" />{action === 'GRANT' ? 'Grant privileges' : 'Revoke privileges'}</>}
             </Button>
 
-            {(execResult || verifyResult) && (
+            {(execResult || verifyResult || validateResult) && (
               <button
                 type="button"
                 className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => { setExecResult(null); setVerifyResult(null) }}
+                onClick={() => { setExecResult(null); setVerifyResult(null); setValidateResult(null) }}
               >
                 <RotateCcw size={11} />
                 Clear result
               </button>
             )}
           </div>
+
+          {/* ── Validate result panel ── */}
+          {validateResult && !execResult && (
+            <div className={`rounded-lg border p-4 space-y-3 text-sm ${
+              validateResult.allOk
+                ? 'border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/30'
+                : 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/30'
+            }`}>
+              <div className="flex items-center gap-2 flex-wrap">
+                {validateResult.allOk
+                  ? <CheckCircle2 size={15} className="text-green-600 dark:text-green-400 shrink-0" />
+                  : <XCircle size={15} className="text-red-500 shrink-0" />}
+                <span className={`font-medium ${validateResult.allOk ? 'text-green-800 dark:text-green-300' : 'text-red-800 dark:text-red-300'}`}>
+                  {validateResult.allOk
+                    ? `All ${validateResult.results.length} statement${validateResult.results.length !== 1 ? 's' : ''} will apply — ${validateResult.connectedUser} has permission`
+                    : `${validateResult.results.filter(r => !r.ok).length} statement${validateResult.results.filter(r => !r.ok).length !== 1 ? 's' : ''} will fail`}
+                </span>
+                <span className="text-xs text-muted-foreground ml-auto">
+                  Executing as <code className="font-mono">{validateResult.connectedUser}</code>
+                  {validateResult.isSuperuser && (
+                    <Badge variant="outline" className="ml-1.5 text-[10px] font-mono">SUPERUSER</Badge>
+                  )}
+                </span>
+              </div>
+              <div className="space-y-1.5">
+                {validateResult.results.map((r, i) => (
+                  <div key={i} className="space-y-0.5">
+                    <div className="flex items-start gap-2">
+                      {r.ok
+                        ? <CheckCircle2 size={13} className="text-green-500 mt-0.5 shrink-0" />
+                        : <XCircle size={13} className="text-red-500 mt-0.5 shrink-0" />}
+                      <pre className="text-xs font-mono whitespace-pre-wrap break-all text-foreground/80">{r.sql}</pre>
+                    </div>
+                    {!r.ok && r.error && (
+                      <p className="text-xs text-red-600 dark:text-red-400 pl-5">{r.error}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* ── Execution result ── */}
           {execResult && <ExecuteResult result={execResult} />}
@@ -972,7 +1156,7 @@ export function GrantRevokePage() {
           )}
 
           {/* ── Incomplete form notice ── */}
-          {!canExecute && !!(role || object || privileges.length) && (
+          {!canExecute && !!(role || effectiveObject || privileges.length) && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <AlertTriangle size={12} />
               Fill in role, object, and at least one privilege to generate SQL.

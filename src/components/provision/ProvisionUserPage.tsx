@@ -1,10 +1,10 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import {
   Plus, Trash2, ShieldAlert, ShieldX, ShieldCheck,
-  CheckCircle2, Loader2, UserPlus, Terminal, Copy, Check, Info,
+  CheckCircle2, XCircle, Loader2, UserPlus, Terminal, Copy, Check, Info,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,11 +14,12 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { ServerSelect } from '@/components/ServerSelect'
+import { DatabaseSelect } from '@/components/DatabaseSelect'
 import { useServerContext } from '@/context/ServerContext'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ScopeType = 'database' | 'schema' | 'table'
+type ScopeType = 'database' | 'schema' | 'table' | 'all-tables' | 'all-sequences'
 
 interface ScopeEntry {
   id: string
@@ -70,11 +71,21 @@ interface ExecuteResult {
   error?: string
 }
 
+interface ValidateResult {
+  ok: boolean
+  connectedUser?: string
+  isSuperuser?: boolean
+  canManageRoles?: boolean
+  results?: { sql: string; ok: boolean; error?: string }[]
+  error?: string
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const DB_PRIVS = ['CONNECT', 'CREATE', 'TEMP']
 const SCHEMA_PRIVS = ['USAGE', 'CREATE']
 const TABLE_PRIVS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']
+const SEQ_PRIVS = ['USAGE', 'SELECT', 'UPDATE']
 
 const ROLE_ATTRS: {
   key: keyof Pick<FormState, 'superuser' | 'createdb' | 'createrole' | 'inherit' | 'replication' | 'bypassrls'>
@@ -208,6 +219,28 @@ function generateSqlLines(form: FormState): SqlLine[] {
         c.push({ text: '-- NOTE: TRIGGER allows defining triggers that execute arbitrary functions on table events', level: 'warning' })
       lines.push({ comments: c, sql: `GRANT ${scope.privileges.join(', ')} ON TABLE ${quoteIdent(scope.schema)}.${quoteIdent(scope.table)} TO ${u};` })
     }
+
+    if (scope.type === 'all-tables' && scope.schema && scope.privileges.length > 0) {
+      const c: SqlLine['comments'] = [
+        { text: `-- Grants on ALL EXISTING tables in schema "${scope.schema}": ${scope.privileges.join(', ')}`, level: 'normal' },
+        { text: '-- NOTE: Applies to tables that exist now only. For future tables, use ALTER DEFAULT PRIVILEGES.', level: 'normal' },
+      ]
+      if (scope.privileges.includes('TRUNCATE'))
+        c.push({ text: '-- !! WARNING: TRUNCATE removes ALL rows instantly with no WHERE clause — cannot be filtered', level: 'danger' })
+      else if (scope.privileges.includes('DELETE'))
+        c.push({ text: '-- NOTE: DELETE allows permanent removal of individual rows', level: 'warning' })
+      if (scope.privileges.includes('TRIGGER'))
+        c.push({ text: '-- NOTE: TRIGGER allows defining triggers that execute arbitrary functions on table events', level: 'warning' })
+      lines.push({ comments: c, sql: `GRANT ${scope.privileges.join(', ')} ON ALL TABLES IN SCHEMA ${quoteIdent(scope.schema)} TO ${u};` })
+    }
+
+    if (scope.type === 'all-sequences' && scope.schema && scope.privileges.length > 0) {
+      const c: SqlLine['comments'] = [
+        { text: `-- Grants on ALL EXISTING sequences in schema "${scope.schema}": ${scope.privileges.join(', ')}`, level: 'normal' },
+        { text: '-- NOTE: Applies to sequences that exist now only. For future sequences, use ALTER DEFAULT PRIVILEGES.', level: 'normal' },
+      ]
+      lines.push({ comments: c, sql: `GRANT ${scope.privileges.join(', ')} ON ALL SEQUENCES IN SCHEMA ${quoteIdent(scope.schema)} TO ${u};` })
+    }
   }
 
   return lines
@@ -239,6 +272,10 @@ function getExecutionStatements(form: FormState): string[] {
       stmts.push(`GRANT ${scope.privileges.join(', ')} ON SCHEMA ${quoteIdent(scope.schema)} TO ${u}`)
     if (scope.type === 'table' && scope.schema && scope.table && scope.privileges.length > 0)
       stmts.push(`GRANT ${scope.privileges.join(', ')} ON TABLE ${quoteIdent(scope.schema)}.${quoteIdent(scope.table)} TO ${u}`)
+    if (scope.type === 'all-tables' && scope.schema && scope.privileges.length > 0)
+      stmts.push(`GRANT ${scope.privileges.join(', ')} ON ALL TABLES IN SCHEMA ${quoteIdent(scope.schema)} TO ${u}`)
+    if (scope.type === 'all-sequences' && scope.schema && scope.privileges.length > 0)
+      stmts.push(`GRANT ${scope.privileges.join(', ')} ON ALL SEQUENCES IN SCHEMA ${quoteIdent(scope.schema)} TO ${u}`)
   }
   return stmts
 }
@@ -281,15 +318,20 @@ function analyzeWarnings(form: FormState): SecurityWarning[] {
     title: 'Schema CREATE: Object shadowing risk',
     description: 'CREATE on a schema allows creating objects (tables, functions, views) within it. An object with the same name as an existing one can shadow it when the schema appears early in search_path, potentially redirecting queries.',
   })
-  if (form.scopes.some(s => s.type === 'table' && s.privileges.includes('TRUNCATE'))) w.push({
+  if (form.scopes.some(s => (s.type === 'table' || s.type === 'all-tables') && s.privileges.includes('TRUNCATE'))) w.push({
     severity: 'warning',
     title: 'TRUNCATE: Entire-table data destruction',
     description: 'TRUNCATE removes every row from a table instantly, without a WHERE clause, and bypasses per-row triggers. Ensure proper backup procedures and audit logging are in place before granting this privilege.',
   })
-  if (form.scopes.some(s => s.type === 'table' && s.privileges.includes('TRIGGER'))) w.push({
+  if (form.scopes.some(s => (s.type === 'table' || s.type === 'all-tables') && s.privileges.includes('TRIGGER'))) w.push({
     severity: 'info',
     title: 'TRIGGER: Arbitrary code on table events',
     description: 'TRIGGER allows defining triggers that execute functions automatically on INSERT, UPDATE, or DELETE. These run with the definer\'s permissions and can perform actions beyond the scope of the triggering statement.',
+  })
+  if (form.scopes.some(s => s.type === 'all-tables' || s.type === 'all-sequences')) w.push({
+    severity: 'info',
+    title: 'Bulk grant: existing objects only',
+    description: 'GRANT … ON ALL TABLES/SEQUENCES IN SCHEMA applies to relations that exist at the time the statement runs. Objects created after this point will not inherit these privileges. Use ALTER DEFAULT PRIVILEGES to cover future objects.',
   })
 
   return w
@@ -411,7 +453,9 @@ function ScopeRow({
   onRemove: (id: string) => void
 }) {
   const privOptions = entry.type === 'database' ? DB_PRIVS
-    : entry.type === 'schema' ? SCHEMA_PRIVS : TABLE_PRIVS
+    : entry.type === 'schema' ? SCHEMA_PRIVS
+    : entry.type === 'all-sequences' ? SEQ_PRIVS
+    : TABLE_PRIVS
   const filteredTables = resources.tables.filter(t => t.schema === entry.schema)
 
   function changeType(v: string) {
@@ -437,13 +481,15 @@ function ScopeRow({
           />
         </span>
         <Select value={entry.type} onValueChange={(v) => v && changeType(v)}>
-          <SelectTrigger className="w-28">
+          <SelectTrigger className="w-44">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="database">Database</SelectItem>
             <SelectItem value="schema">Schema</SelectItem>
-            <SelectItem value="table">Table</SelectItem>
+            <SelectItem value="table">Table / View</SelectItem>
+            <SelectItem value="all-tables">All Tables in Schema</SelectItem>
+            <SelectItem value="all-sequences">All Sequences in Schema</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -479,6 +525,31 @@ function ScopeRow({
             <FieldInfo
               tip="The schema to grant privileges on. Schema-level grants control whether the user can see and navigate objects within it. USAGE is required before any table or function privileges in this schema take effect."
               defaultNote="Grant USAGE on every schema that contains tables this user should access. Without it, table grants are silently ignored."
+            />
+          </span>
+          <Select value={entry.schema} onValueChange={(v) => v && onUpdate(entry.id, { schema: v })}>
+            <SelectTrigger className="w-44">
+              <SelectValue placeholder="Select…" />
+            </SelectTrigger>
+            <SelectContent>
+              {resources.schemas.map(s => (
+                <SelectItem key={s.name} value={s.name}>{s.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      {/* Bulk schema target (all-tables / all-sequences) */}
+      {(entry.type === 'all-tables' || entry.type === 'all-sequences') && (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-muted-foreground flex items-center gap-1">
+            Schema
+            <FieldInfo
+              tip={entry.type === 'all-tables'
+                ? 'Generates GRANT … ON ALL TABLES IN SCHEMA. Applies to every table, view, materialized view, and foreign table that exists in the schema at the time the statement runs. Objects created afterwards are NOT covered — add ALTER DEFAULT PRIVILEGES for those.'
+                : 'Generates GRANT … ON ALL SEQUENCES IN SCHEMA. Applies to every sequence that exists at the time the statement runs. Objects created afterwards are NOT covered — add ALTER DEFAULT PRIVILEGES for those.'}
+              defaultNote="You must also grant USAGE on this schema separately so the user can navigate into it."
             />
           </span>
           <Select value={entry.schema} onValueChange={(v) => v && onUpdate(entry.id, { schema: v })}>
@@ -601,16 +672,39 @@ export function ProvisionUserPage() {
   const [form, setForm] = useState<FormState>(INIT_FORM)
   const [roleToAdd, setRoleToAdd] = useState('')
   const [executeResult, setExecuteResult] = useState<ExecuteResult | null>(null)
+  const [validateResult, setValidateResult] = useState<ValidateResult | null>(null)
+  const [selectedDb, setSelectedDb] = useState('')
+
+  // Reset database selection on server switch
+  useEffect(() => { setSelectedDb(''); setValidateResult(null) }, [selectedId])
+
+  // Schema/table grants are database-specific: connect to the selected database when one is chosen.
+  // CREATE ROLE and GRANT ON DATABASE work from any database, so using dbConnection for all is fine.
+  const dbConnection = selected && selectedDb ? { ...selected, database: selectedDb } : selected
 
   const { data: resources, isLoading: resourcesLoading } = useQuery<ResourceData>({
-    queryKey: ['provision-resources', selectedId],
+    queryKey: ['provision-resources', selectedId, selectedDb],
     queryFn: () =>
       fetch('/api/pg/provision-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ connection: selected, action: 'resources' }),
+        body: JSON.stringify({ connection: dbConnection, action: 'resources' }),
       }).then(r => r.json()),
     enabled: !!selected,
+  })
+
+  const validateMutation = useMutation({
+    mutationFn: async () => {
+      const statements = getExecutionStatements(form)
+      const res = await fetch('/api/pg/provision-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection: dbConnection, action: 'validate', statements }),
+      })
+      return res.json() as Promise<ValidateResult>
+    },
+    onSuccess: (data) => setValidateResult(data),
+    onError: () => setValidateResult({ ok: false, error: 'Network or server error during validation' }),
   })
 
   const executeMutation = useMutation({
@@ -619,7 +713,7 @@ export function ProvisionUserPage() {
       const res = await fetch('/api/pg/provision-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ connection: selected, action: 'execute', statements }),
+        body: JSON.stringify({ connection: dbConnection, action: 'execute', statements }),
       })
       return res.json() as Promise<ExecuteResult>
     },
@@ -638,21 +732,38 @@ export function ProvisionUserPage() {
   function setField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm(f => ({ ...f, [key]: value }))
     setExecuteResult(null)
+    setValidateResult(null)
   }
 
   function toggleBool(key: 'superuser' | 'createdb' | 'createrole' | 'inherit' | 'replication' | 'bypassrls') {
     setForm(f => ({ ...f, [key]: !f[key] }))
     setExecuteResult(null)
+    setValidateResult(null)
   }
 
   function updateScope(id: string, patch: Partial<ScopeEntry>) {
     setForm(f => ({ ...f, scopes: f.scopes.map(s => s.id === id ? { ...s, ...patch } : s) }))
     setExecuteResult(null)
+    setValidateResult(null)
   }
 
   function removeScope(id: string) {
     setForm(f => ({ ...f, scopes: f.scopes.filter(s => s.id !== id) }))
     setExecuteResult(null)
+    setValidateResult(null)
+  }
+
+  function handleDbChange(db: string) {
+    setSelectedDb(db)
+    // Clear schema/table selections in scope entries — they belong to the previous database
+    setForm(f => ({
+      ...f,
+      scopes: f.scopes.map(s =>
+        s.type === 'schema' || s.type === 'table' ? { ...s, schema: '', table: '' } : s
+      ),
+    }))
+    setExecuteResult(null)
+    setValidateResult(null)
   }
 
   function addScope() {
@@ -673,7 +784,7 @@ export function ProvisionUserPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-semibold flex items-center gap-2">
             <UserPlus size={22} />
@@ -683,7 +794,21 @@ export function ProvisionUserPage() {
             Create a new PostgreSQL login with fine-grained access control
           </p>
         </div>
-        <ServerSelect />
+        <div className="flex items-center gap-2 flex-wrap">
+          {selected && (
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Database</p>
+              <DatabaseSelect
+                connection={selected}
+                value={selectedDb}
+                onChange={handleDbChange}
+                placeholder="Default database"
+                className="w-44"
+              />
+            </div>
+          )}
+          <ServerSelect />
+        </div>
       </div>
 
       {servers.length === 0 && (
@@ -963,24 +1088,77 @@ export function ProvisionUserPage() {
               <div>
                 <p className="text-sm font-medium">Execute on {selected.name}</p>
                 <p className="text-xs text-muted-foreground">
-                  Runs {sqlLines.length} statement{sqlLines.length !== 1 ? 's' : ''} in a single transaction —
-                  all succeed together or all roll back.
+                  Validate to confirm permissions, then execute in a single transaction — all succeed or all roll back.
                 </p>
               </div>
-              <Button
-                onClick={() => { setExecuteResult(null); executeMutation.mutate() }}
-                disabled={!canExecute}
-                variant={dangerCount > 0 ? 'destructive' : 'default'}
-                className="shrink-0"
-              >
-                {executeMutation.isPending ? (
-                  <><Loader2 size={14} className="animate-spin mr-1.5" /> Executing…</>
-                ) : (
-                  <><Terminal size={14} className="mr-1.5" />
-                    {dangerCount > 0 ? 'Execute (High Risk)' : 'Execute'}</>
-                )}
-              </Button>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  variant="outline"
+                  onClick={() => { setExecuteResult(null); setValidateResult(null); validateMutation.mutate() }}
+                  disabled={!canExecute || validateMutation.isPending || executeMutation.isPending}
+                >
+                  {validateMutation.isPending
+                    ? <><Loader2 size={14} className="animate-spin mr-1.5" />Validating…</>
+                    : <><ShieldCheck size={14} className="mr-1.5" />Validate</>}
+                </Button>
+                <Button
+                  onClick={() => { setExecuteResult(null); executeMutation.mutate() }}
+                  disabled={!canExecute || !validateResult?.ok || executeMutation.isPending || validateMutation.isPending}
+                  variant={dangerCount > 0 ? 'destructive' : 'default'}
+                >
+                  {executeMutation.isPending
+                    ? <><Loader2 size={14} className="animate-spin mr-1.5" />Executing…</>
+                    : <><Terminal size={14} className="mr-1.5" />{dangerCount > 0 ? 'Execute (High Risk)' : 'Execute'}</>}
+                </Button>
+              </div>
             </div>
+
+            {/* Validation results */}
+            {validateResult && !executeResult && (
+              <div className={`rounded-md border p-3 text-xs space-y-2 ${
+                validateResult.ok
+                  ? 'border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/30'
+                  : 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/30'
+              }`}>
+                {validateResult.ok ? (
+                  <>
+                    <div className="flex items-center gap-1.5 font-semibold text-green-700 dark:text-green-400">
+                      <CheckCircle2 size={13} />
+                      All {sqlLines.length} statements validated — {validateResult.connectedUser} has permission to execute
+                      {validateResult.isSuperuser && (
+                        <span className="ml-1 inline-flex items-center rounded border border-green-400 bg-green-200 px-1 text-[10px] text-green-800 dark:bg-green-900 dark:text-green-200">
+                          superuser
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-muted-foreground">Review the SQL above, then click Execute to apply.</p>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-1.5 font-semibold text-red-700 dark:text-red-400">
+                      <ShieldX size={13} />
+                      Validation failed — {validateResult.connectedUser ?? 'connected user'} lacks required permissions
+                    </div>
+                    {validateResult.results?.map((r, i) => (
+                      <div key={i} className="space-y-0.5">
+                        <div className="flex items-start gap-1.5">
+                          {r.ok
+                            ? <CheckCircle2 size={11} className="text-green-500 mt-0.5 shrink-0" />
+                            : <XCircle size={11} className="text-red-500 mt-0.5 shrink-0" />}
+                          <span className="font-mono break-all">{r.sql}</span>
+                        </div>
+                        {!r.ok && r.error && (
+                          <p className="text-red-600 dark:text-red-400 pl-4 break-all">{r.error}</p>
+                        )}
+                      </div>
+                    ))}
+                    {validateResult.error && !validateResult.results && (
+                      <p className="text-red-600 dark:text-red-400 font-mono">{validateResult.error}</p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
 
             {executeResult && (
               <div className={`rounded-md border p-3 text-xs space-y-2 ${
