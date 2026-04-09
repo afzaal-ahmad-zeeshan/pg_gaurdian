@@ -2,6 +2,8 @@
 
 A self-hostable web UI for managing PostgreSQL users, roles, and permissions. Connect to multiple Postgres servers, inspect roles, browse databases, and view privileges — all from a clean, dark/light-mode interface.
 
+> This project (and repository) is a pilot project at the moment. Use on your own risk.
+
 ---
 
 ## Features
