@@ -1,30 +1,11 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { getServer } from '@/lib/servers'
-import { getPool } from '@/lib/db/client'
-import { getRoles, createRole, dropRole } from '@/lib/db/queries'
-
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ serverId: string }> }) {
-  const { serverId } = await params
-  const server = getServer(serverId)
-  if (!server) return NextResponse.json({ error: 'Server not found' }, { status: 404 })
-  const roles = await getRoles(getPool(server))
-  return NextResponse.json(roles)
+// Superseded by /api/pg/roles. Kept as a stub to avoid 404s.
+import { NextResponse } from 'next/server'
+export async function GET() {
+  return NextResponse.json({ error: 'Use POST /api/pg/roles' }, { status: 410 })
 }
-
-export async function POST(req: NextRequest, { params }: { params: Promise<{ serverId: string }> }) {
-  const { serverId } = await params
-  const server = getServer(serverId)
-  if (!server) return NextResponse.json({ error: 'Server not found' }, { status: 404 })
-  const body = await req.json()
-  await createRole(getPool(server), body.rolename, body.options ?? {})
-  return NextResponse.json({ ok: true }, { status: 201 })
+export async function POST() {
+  return NextResponse.json({ error: 'Use POST /api/pg/roles' }, { status: 410 })
 }
-
-export async function DELETE(req: NextRequest, { params }: { params: Promise<{ serverId: string }> }) {
-  const { serverId } = await params
-  const server = getServer(serverId)
-  if (!server) return NextResponse.json({ error: 'Server not found' }, { status: 404 })
-  const { rolename } = await req.json()
-  await dropRole(getPool(server), rolename)
-  return NextResponse.json({ ok: true })
+export async function DELETE() {
+  return NextResponse.json({ error: 'Use POST /api/pg/roles' }, { status: 410 })
 }

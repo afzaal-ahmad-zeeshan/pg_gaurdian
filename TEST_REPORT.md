@@ -1,6 +1,6 @@
 # pg_guardian — Test Report
 
-> Generated: 2026-03-25T22:56:52.950Z
+> Generated: 2026-05-10T00:47:31.950Z
 
 ---
 
@@ -34,24 +34,18 @@
 
 ### ✅ `api/servers.test.ts`
 
-10 passed · 0 failed · 0 skipped
+6 passed · 0 failed · 0 skipped
 
 - **GET /api/servers**
   - ✓ returns an empty array (superseded stub)
 - **GET /api/servers/[id]/test**
   - ✓ returns 410 Gone (deprecated endpoint)
 - **GET /api/servers/[id]/databases**
-  - ✓ returns databases for a known server
-  - ✓ returns 404 for unknown server
-- **GET /api/servers/[id]/roles**
-  - ✓ returns roles for a known server
-  - ✓ returns 404 for unknown server
-- **POST /api/servers/[id]/roles**
-  - ✓ creates a role and returns 201
-  - ✓ returns 404 for unknown server
-- **DELETE /api/servers/[id]/roles**
-  - ✓ drops a role and returns 200
-  - ✓ returns 404 for unknown server
+  - ✓ returns 410 Gone (superseded stub)
+- **/api/servers/[id]/roles**
+  - ✓ GET returns 410 Gone
+  - ✓ POST returns 410 Gone
+  - ✓ DELETE returns 410 Gone
 
 ## DB Queries
 
@@ -92,28 +86,6 @@
   - ✓ sends GRANT role TO role
 - **revokeRole**
   - ✓ sends REVOKE role FROM role
-
-## Server Store
-
-### ✅ `servers-store.test.ts`
-
-11 passed · 0 failed · 0 skipped
-
-- **getServers**
-  - ✓ returns an empty array when file contains []
-  - ✓ returns parsed servers from file
-  - ✓ returns multiple servers
-- **getServer**
-  - ✓ returns the matching server by id
-  - ✓ returns undefined for an unknown id
-  - ✓ returns undefined when store is empty
-- **saveServer**
-  - ✓ appends a new server and writes to file
-  - ✓ updates an existing server in place
-  - ✓ does not duplicate — adds second server alongside first
-- **deleteServer**
-  - ✓ removes the server with the given id
-  - ✓ is a no-op for an id that does not exist
 
 ## Hooks
 
@@ -182,34 +154,34 @@
   - ✓ shows database owner name
   - ✓ renders table headers
 
-### ✅ `components/PermissionsMatrix.test.tsx`
+### ❌ `components/PermissionsMatrix.test.tsx`
 
-17 passed · 0 failed · 0 skipped
+3 passed · 14 failed · 0 skipped
 
 - **PermissionsMatrix — no server configured**
   - ✓ shows "No servers configured" message
   - ✓ does not call fetch when no server is configured
 - **PermissionsMatrix — auto-selection**
-  - ✓ auto-selects the only user when there is one
-  - ✓ auto-selects the first user when multiple users exist
-  - ✓ fetches the matrix for the auto-selected role
+  - ✗ auto-selects the only user when there is one
+  - ✗ auto-selects the first user when multiple users exist
+  - ✗ fetches the matrix for the auto-selected role
 - **PermissionsMatrix — section headings**
-  - ✓ renders all 8 section titles after data loads
+  - ✗ renders all 8 section titles after data loads
 - **PermissionsMatrix — permission display**
-  - ✓ shows ✓ for granted permissions
-  - ✓ shows — for denied permissions
-  - ✓ renders table/view object names
-  - ✓ renders schema names
+  - ✗ shows ✓ for granted permissions
+  - ✗ shows — for denied permissions
+  - ✗ renders table/view object names
+  - ✗ renders schema names
 - **PermissionsMatrix — kind badges**
-  - ✓ shows TABLE badge for regular tables
-  - ✓ shows VIEW badge for views
-  - ✓ shows FN badge for functions
-  - ✓ shows ENUM badge for enum types
+  - ✗ shows TABLE badge for regular tables
+  - ✗ shows VIEW badge for views
+  - ✗ shows FN badge for functions
+  - ✗ shows ENUM badge for enum types
 - **PermissionsMatrix — loading and empty states**
   - ✓ shows loading indicator while users are being fetched
-  - ✓ shows "No login roles found" when the server has no login roles
+  - ✗ shows "No login roles found" when the server has no login roles
 - **PermissionsMatrix — summary strip**
-  - ✓ shows resource counts in the summary strip
+  - ✗ shows resource counts in the summary strip
 
 ### ✅ `components/RolesPage.test.tsx`
 
@@ -331,12 +303,42 @@
 
 | Category | Files | Passed | Failed | Skipped |
 |----------|------:|-------:|-------:|--------:|
-| ✅ API Routes | 2 | 26 | 0 | 0 |
+| ✅ API Routes | 2 | 22 | 0 | 0 |
 | ✅ DB Queries | 1 | 23 | 0 | 0 |
-| ✅ Server Store | 1 | 11 | 0 | 0 |
 | ✅ Hooks | 1 | 4 | 0 | 0 |
 | ✅ Pure Utilities | 1 | 6 | 0 | 0 |
-| ✅ Components | 8 | 56 | 0 | 0 |
+| ❌ Components | 8 | 42 | 14 | 0 |
 | ✅ Context | 1 | 10 | 0 | 0 |
 | ✅ User Flows | 2 | 13 | 0 | 0 |
-| **Total** | **17** | **149** | **0** | **0** |
+| **Total** | **16** | **120** | **14** | **0** |
+
+### ❌ Failed Tests
+
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — auto-selection > auto-selects the only user when there is one**
+  > `Unable to find role="combobox"`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — auto-selection > auto-selects the first user when multiple users exist**
+  > `Unable to find role="combobox"`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — auto-selection > fetches the matrix for the auto-selected role**
+  > `expected undefined to be defined`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — section headings > renders all 8 section titles after data loads**
+  > `Unable to find an element with the text: Tables, Views & Materialized Views. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — permission display > shows ✓ for granted permissions**
+  > `Unable to find an element with the text: ✓. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — permission display > shows — for denied permissions**
+  > `Unable to find an element with the text: —. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — permission display > renders table/view object names**
+  > `Unable to find an element with the text: public.users. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — permission display > renders schema names**
+  > `Unable to find an element with the text: public. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — kind badges > shows TABLE badge for regular tables**
+  > `Unable to find an element with the text: TABLE. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — kind badges > shows VIEW badge for views**
+  > `Unable to find an element with the text: VIEW. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — kind badges > shows FN badge for functions**
+  > `Unable to find an element with the text: FN. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — kind badges > shows ENUM badge for enum types**
+  > `Unable to find an element with the text: ENUM. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — loading and empty states > shows "No login roles found" when the server has no login roles**
+  > `Unable to find an element with the text: /no login roles found/i. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.`
+- `components/PermissionsMatrix.test.tsx` — **PermissionsMatrix — summary strip > shows resource counts in the summary strip**
+  > `Unable to find an element with the text: Tables & Views. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.`

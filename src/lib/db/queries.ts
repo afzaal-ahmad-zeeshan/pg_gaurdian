@@ -1,4 +1,9 @@
 import { Pool, QueryResultRow } from 'pg'
+
+/** Safely quote a PostgreSQL identifier, escaping embedded double-quotes. */
+function qi(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`
+}
 import {
   PgRole, PgDatabase, PgPrivilege, PgCurrentUser,
   PermissionsMatrix,
@@ -67,7 +72,7 @@ export async function createRole(pool: Pool, rolename: string, options: {
   password?: string
   validUntil?: string
 }): Promise<void> {
-  const parts = [`CREATE ROLE "${rolename}"`]
+  const parts = [`CREATE ROLE ${qi(rolename)}`]
   const attrs: string[] = []
 
   if (options.canLogin) attrs.push('LOGIN')
@@ -75,14 +80,14 @@ export async function createRole(pool: Pool, rolename: string, options: {
   if (options.createDb) attrs.push('CREATEDB')
   if (options.createRole) attrs.push('CREATEROLE')
   if (options.password) attrs.push(`PASSWORD '${options.password.replace(/'/g, "''")}'`)
-  if (options.validUntil) attrs.push(`VALID UNTIL '${options.validUntil}'`)
+  if (options.validUntil) attrs.push(`VALID UNTIL '${options.validUntil.replace(/'/g, "''")}'`)
 
   if (attrs.length) parts.push('WITH', ...attrs)
   await pool.query(parts.join(' '))
 }
 
 export async function dropRole(pool: Pool, rolename: string): Promise<void> {
-  await pool.query(`DROP ROLE IF EXISTS "${rolename}"`)
+  await pool.query(`DROP ROLE IF EXISTS ${qi(rolename)}`)
 }
 
 export async function getUsers(pool: Pool): Promise<PgRole[]> {
@@ -649,9 +654,9 @@ export async function getManagementRights(pool: Pool): Promise<ManagementRights>
 }
 
 export async function grantRole(pool: Pool, role: string, toRole: string): Promise<void> {
-  await pool.query(`GRANT "${role}" TO "${toRole}"`)
+  await pool.query(`GRANT ${qi(role)} TO ${qi(toRole)}`)
 }
 
 export async function revokeRole(pool: Pool, role: string, fromRole: string): Promise<void> {
-  await pool.query(`REVOKE "${role}" FROM "${fromRole}"`)
+  await pool.query(`REVOKE ${qi(role)} FROM ${qi(fromRole)}`)
 }

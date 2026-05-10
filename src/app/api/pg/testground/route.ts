@@ -124,8 +124,8 @@ export async function POST(req: NextRequest) {
       await client.query('BEGIN')
 
       if (role) {
-        // Safely quote the role name — strip any embedded double-quotes first
-        const safe = role.replace(/"/g, '')
+        // Safely quote the role name — escape any embedded double-quotes
+        const safe = role.replace(/"/g, '""')
         await client.query(`SET LOCAL ROLE "${safe}"`)
       }
 
